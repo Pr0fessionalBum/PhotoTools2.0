@@ -24,6 +24,7 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
+        UnhandledException += (_, args) => WriteStartupError(args.Exception);
     }
 
     /// <summary>
@@ -32,7 +33,24 @@ public partial class App : Application
     /// <param name="args">Details about the launch request and process.</param>
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
-        MainWindow = new MainWindow();
-        MainWindow.Activate();
+        try
+        {
+            MainWindow = new MainWindow();
+            MainWindow.Activate();
+        }
+        catch (Exception ex)
+        {
+            WriteStartupError(ex);
+            throw;
+        }
+    }
+
+    private static void WriteStartupError(Exception exception)
+    {
+        try
+        {
+            File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "startup-error.txt"), exception.ToString());
+        }
+        catch { }
     }
 }

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl x:Class="PhotoTools2.Controls.ToolDesignCard" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Padding="20" RowSpacing="12">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock FontSize="26" FontWeight="SemiBold" Text="{x:Bind Title}"/><TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{x:Bind Description}" TextWrapping="Wrap"/></StackPanel><Button Grid.Column="1" Content="Tool settings"/></Grid>
+        <Grid Grid.Row="1" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox IsReadOnly="True" PlaceholderText="Choose or drop the folder to work with"/><Button Grid.Column="1" Content="Choose folder"/><Button Grid.Column="2" Content="Open" IsEnabled="False"/></Grid>
+        <Grid Grid.Row="2" ColumnSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><AutoSuggestBox QueryIcon="Find" PlaceholderText="Search files"/><ComboBox Grid.Column="1" SelectedIndex="0"><ComboBoxItem Content="Name"/><ComboBoxItem Content="Date"/><ComboBoxItem Content="Type"/></ComboBox><Button Grid.Column="2" Content="View"/></Grid>
+        <Border Grid.Row="3" Padding="18" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12">
+            <Grid><StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="9"><FontIcon FontSize="42" Glyph="&#xE8B7;"/><TextBlock FontSize="17" FontWeight="SemiBold" Text="Files and thumbnails appear here"/><TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="Select, preview, rename, right-click, or drag files inside this workspace."/></StackPanel></Grid>
+        </Border>
+        <Grid Grid.Row="4"><TextBlock VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="0 files selected"/><Button HorizontalAlignment="Right" Content="{x:Bind PrimaryAction}" IsEnabled="False" Style="{StaticResource AccentButtonStyle}"/></Grid>
+    </Grid>
+</UserControl>

@@ -20,43 +20,13 @@
 
         <TitleBar
             x:Name="AppTitleBar"
-            Title="Photo Tools 2.0"
-            BackRequested="TitleBar_BackRequested"
-            IsBackButtonVisible="{x:Bind NavFrame.CanGoBack, Mode=OneWay}"
-            IsPaneToggleButtonVisible="True"
-            PaneToggleRequested="TitleBar_PaneToggleRequested">
+            Subtitle="Photo workspace"
+            Title="Photo Tools 2.0">
             <TitleBar.IconSource>
                 <ImageIconSource ImageSource="Assets/AppIcon.ico" />
             </TitleBar.IconSource>
         </TitleBar>
 
-        <NavigationView
-            x:Name="NavView"
-            Grid.Row="1"
-            IsBackButtonVisible="Collapsed"
-            IsPaneToggleButtonVisible="False"
-            SelectionChanged="NavView_SelectionChanged">
-            <NavigationView.MenuItems>
-                <NavigationViewItem
-                    Content="Albums"
-                    IsSelected="True"
-                    Tag="home">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE80F;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem Content="Activity" Tag="activity">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE9D9;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem Content="About" Tag="about">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xEA3A;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-            </NavigationView.MenuItems>
-            <Frame x:Name="NavFrame" />
-        </NavigationView>
+        <Frame x:Name="WorkspaceFrame" Grid.Row="1" />
     </Grid>
 </Window>
