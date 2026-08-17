@@ -24,7 +24,7 @@
                 <TextBox x:Name="NameBox" Grid.Column="1" PlaceholderText="Example: Family Album"/>
                 <TextBlock x:Name="StartLabel" Grid.Column="2" VerticalAlignment="Center" Text="Starting number"/>
                 <TextBox x:Name="StartBox" Grid.Column="3" Text="1"/>
-                <CheckBox x:Name="RecurseBox" Grid.Column="4" VerticalAlignment="Center" Content="Include subfolders"/>
+                <CheckBox x:Name="RecurseBox" Grid.Column="4" VerticalAlignment="Center" Checked="RecurseBox_Changed" Unchecked="RecurseBox_Changed" Content="Include subfolders"/>
             </Grid>
         </Border>
         <Grid Grid.Row="3" ColumnSpacing="12">

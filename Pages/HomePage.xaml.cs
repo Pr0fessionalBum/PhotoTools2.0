@@ -85,13 +85,14 @@ public sealed partial class HomePage : Page
             if (index == 4) DuplexWorkspace.RefreshFromCurrentAlbum();
             if (index == 5) NumberingWorkspace.RefreshFromCurrentAlbum();
             if (index == 6) StatsWorkspace.RefreshFromCurrentAlbum();
+            if (index == 7) ScannerLineWorkspace.RefreshFromCurrentAlbum();
         }
     }
 
     private void ShowWorkspace(int index)
     {
         FrameworkElement[] workspaces = [AlbumsWorkspace, CropWorkspace, ReplacementWorkspace,
-            ConvertWorkspace, DuplexWorkspace, NumberingWorkspace, StatsWorkspace];
+            ConvertWorkspace, DuplexWorkspace, NumberingWorkspace, StatsWorkspace, ScannerLineWorkspace];
         for (var i = 0; i < workspaces.Length; i++)
             workspaces[i].Visibility = i == index ? Visibility.Visible : Visibility.Collapsed;
     }

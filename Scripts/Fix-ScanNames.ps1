@@ -49,6 +49,7 @@
 param(
     [string]$Path = ".",
     [string]$QuarantineFolder = "Quarantine",
+    [string]$NameOverride = "",
     [switch]$Recurse,
     [switch]$DryRun
 )
@@ -60,13 +61,14 @@ function Process-Folder {
     param(
         [string]$FolderPath,
         [string]$QuarantineFolder,
+        [string]$NameOverride,
         [switch]$DryRun
     )
 
     # Generic pattern: "<anything> (<number>)[B].<ext>"  ext = png, jpg, or jpeg
     # Any file whose number is immediately followed by B is treated as a back image,
     # whether it is a normal pair like "Family reunions (12B).png" or a raw scan like "scan012B.png".
-    $pattern = '^(.+) \((\d+)(B)?\)\.(png|jpe?g)$'
+    $pattern = '^(.+) \((\d+)([AB])?\)\.(png|jpe?g)$'
 
     Write-Host ""
     Write-Host "==================================================="
@@ -82,6 +84,7 @@ function Process-Folder {
                 Prefix = $Matches[1]
                 Num    = [int]$Matches[2]
                 IsBack = [bool]($Matches[3] -eq 'B')
+                FrontSuffix = if ($Matches[3] -eq 'A') { 'A' } else { '' }
                 Ext    = $Matches[4]
             }
         }
@@ -121,18 +124,25 @@ function Process-Folder {
         Write-Host "  WARNING: No '(1)' anchor file found. Falling back to lowest existing number: $lowestNum, using name '$folderName'." -ForegroundColor Yellow
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($NameOverride)) {
+        $folderName = $NameOverride.Trim()
+        foreach ($entry in $matched) { $entry.Prefix = $folderName }
+        Write-Host "  Using name override: '$folderName'" -ForegroundColor Cyan
+    }
+
     # ---- Include raw scanner files and preserve the number embedded in their filename ----
     $extraEntries = @()
     foreach ($f in $files) {
         $alreadyHandled = @($matched | Where-Object { $_.File.FullName -eq $f.FullName })
         if ($alreadyHandled.Count -gt 0) { continue }
 
-        if ($f.Name -match '^.*?(\d+)(B)?\.(png|jpe?g)$') {
+        if ($f.Name -match '^.*?(\d+)([AB])?\.(png|jpe?g)$') {
             $extraEntries += [PSCustomObject]@{
                 File   = $f
                 Prefix = $folderName
                 Num    = [int]$Matches[1]
                 IsBack = [bool]($Matches[2] -eq 'B')
+                FrontSuffix = if ($Matches[2] -eq 'A') { 'A' } else { '' }
                 Ext    = $Matches[3]
             }
         } elseif ([System.IO.Path]::GetFileNameWithoutExtension($f.Name) -eq $folderName -and
@@ -142,6 +152,7 @@ function Process-Folder {
                 Prefix = $folderName
                 Num    = 1
                 IsBack = $false
+                FrontSuffix = ''
                 Ext    = $f.Extension.TrimStart('.')
             }
         }
@@ -164,9 +175,9 @@ function Process-Folder {
     # ---- Group by number ----
     $groups = @{}
     foreach ($m in $matched) {
-        if (-not $groups.ContainsKey($m.Num)) { $groups[$m.Num] = @{ Front = $null; FrontExt = $null; Back = $null; BackExt = $null } }
+        if (-not $groups.ContainsKey($m.Num)) { $groups[$m.Num] = @{ Front = $null; FrontExt = $null; FrontSuffix = ''; Back = $null; BackExt = $null } }
         if ($m.IsBack) { $groups[$m.Num].Back = $m.File.Name; $groups[$m.Num].BackExt = $m.Ext }
-        else { $groups[$m.Num].Front = $m.File.Name; $groups[$m.Num].FrontExt = $m.Ext }
+        else { $groups[$m.Num].Front = $m.File.Name; $groups[$m.Num].FrontExt = $m.Ext; $groups[$m.Num].FrontSuffix = $m.FrontSuffix }
     }
 
     # ---- Orphan backs -> quarantine (number unchanged) = missing-pair alert ----
@@ -218,7 +229,7 @@ function Process-Folder {
             } else {
                 $originalLabel = "{0} ({1}).{2}" -f $folderName, $num, $g.FrontExt
             }
-            Write-Host "    $originalLabel -> $folderName ($t).$($g.FrontExt)"
+            Write-Host "    $originalLabel -> $folderName ($t$($g.FrontSuffix)).$($g.FrontExt)"
         }
         if ($g.Back) {
             $isAlreadyCorrect = ($t -eq $num) -and (-not $needsRawRename)
@@ -240,19 +251,19 @@ function Process-Folder {
         if ($g.Front) {
             $tn = "__tmp_$ti.$($g.FrontExt)"
             Rename-Item -Path (Join-Path $FolderPath $g.Front) -NewName $tn
-            $tempMap += [PSCustomObject]@{ Temp = $tn; Num = $num; IsBack = $false; Ext = $g.FrontExt }
+            $tempMap += [PSCustomObject]@{ Temp = $tn; Num = $num; IsBack = $false; FrontSuffix = $g.FrontSuffix; Ext = $g.FrontExt }
             $ti++
         }
         if ($g.Back) {
             $tn = "__tmp_$ti.$($g.BackExt)"
             Rename-Item -Path (Join-Path $FolderPath $g.Back) -NewName $tn
-            $tempMap += [PSCustomObject]@{ Temp = $tn; Num = $num; IsBack = $true; Ext = $g.BackExt }
+            $tempMap += [PSCustomObject]@{ Temp = $tn; Num = $num; IsBack = $true; FrontSuffix = ''; Ext = $g.BackExt }
             $ti++
         }
     }
     foreach ($e in $tempMap) {
         $fn = $newNumMap[$e.Num]
-        $finalName = if ($e.IsBack) { "{0} ({1}B).{2}" -f $folderName, $fn, $e.Ext } else { "{0} ({1}).{2}" -f $folderName, $fn, $e.Ext }
+        $finalName = if ($e.IsBack) { "{0} ({1}B).{2}" -f $folderName, $fn, $e.Ext } else { "{0} ({1}{2}).{3}" -f $folderName, $fn, $e.FrontSuffix, $e.Ext }
         Rename-Item -Path (Join-Path $FolderPath $e.Temp) -NewName $finalName
     }
 
@@ -273,5 +284,5 @@ if ($Recurse) {
 }
 
 foreach ($folder in $foldersToProcess) {
-    Process-Folder -FolderPath $folder -QuarantineFolder $QuarantineFolder -DryRun:$DryRun
+    Process-Folder -FolderPath $folder -QuarantineFolder $QuarantineFolder -NameOverride $NameOverride -DryRun:$DryRun
 }

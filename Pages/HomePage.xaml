@@ -21,6 +21,7 @@
                     <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Click="ToolButton_Click" Tag="4"><StackPanel Orientation="Horizontal" Spacing="9"><FontIcon Glyph="&#xE8C8;"/><TextBlock Text="Front / Back"/></StackPanel></Button>
                     <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Click="ToolButton_Click" Tag="5"><StackPanel Orientation="Horizontal" Spacing="9"><FontIcon Glyph="&#xE8AC;"/><TextBlock Text="Fix Numbering"/></StackPanel></Button>
                     <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Click="ToolButton_Click" Tag="6"><StackPanel Orientation="Horizontal" Spacing="9"><FontIcon Glyph="&#xE9D9;"/><TextBlock Text="Photo Stats"/></StackPanel></Button>
+                    <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Click="ToolButton_Click" Tag="7"><StackPanel Orientation="Horizontal" Spacing="9"><FontIcon Glyph="&#xE9F9;"/><TextBlock Text="Scanner Lines"/></StackPanel></Button>
                 </StackPanel>
                 <StackPanel Grid.Row="2" Spacing="6"><TextBlock Margin="8,0" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="EXTERNAL"/><Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Click="ExternalToolButton_Click" Tag="duplicates" Content="Duplicate Finder"/><Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Click="ExternalToolButton_Click" Tag="vuescan" Content="VueScan"/></StackPanel>
             </Grid>
@@ -67,6 +68,7 @@
             <controls:RenameWorkspace x:Name="DuplexWorkspace" Visibility="Collapsed" Tag="Duplex"/>
             <controls:RenameWorkspace x:Name="NumberingWorkspace" Visibility="Collapsed" Tag="Numbering"/>
             <controls:StatsWorkspace x:Name="StatsWorkspace" Visibility="Collapsed"/>
+            <controls:ScannerLineWorkspace x:Name="ScannerLineWorkspace" Visibility="Collapsed"/>
         </Grid>
         <InfoBar x:Name="StatusBar" Grid.Row="1" Grid.Column="1" Margin="20,8,20,14" IsClosable="False" IsOpen="True" Message="Choose or drop a photo collection to begin." Severity="Informational"/>
     </Grid>

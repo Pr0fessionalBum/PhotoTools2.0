@@ -43,13 +43,23 @@ public sealed partial class RenameWorkspace : UserControl
     {
         HeaderTitle.Text = IsDuplex ? "Name Front / Back Scans" : "Fix Scan Numbering";
         HeaderDescription.Text = IsDuplex ? "Pair sorted scan files and apply consistent front/back names." : "Close numbering gaps and quarantine orphaned back scans.";
-        var duplexVisibility = IsDuplex ? Visibility.Visible : Visibility.Collapsed;
-        NameLabel.Visibility = duplexVisibility;
-        NameBox.Visibility = duplexVisibility;
-        StartLabel.Visibility = duplexVisibility;
-        StartBox.Visibility = duplexVisibility;
+        var showName = IsDuplex || RecurseBox.IsChecked != true;
+        NameLabel.Visibility = showName ? Visibility.Visible : Visibility.Collapsed;
+        NameBox.Visibility = showName ? Visibility.Visible : Visibility.Collapsed;
+        NameLabel.Text = IsDuplex ? "Album name" : "Album name override (optional)";
+        NameBox.PlaceholderText = IsDuplex ? "Example: Family Album" : "Leave blank to auto-detect";
+        StartLabel.Visibility = IsDuplex ? Visibility.Visible : Visibility.Collapsed;
+        StartBox.Visibility = IsDuplex ? Visibility.Visible : Visibility.Collapsed;
         RecurseBox.Visibility = IsDuplex ? Visibility.Collapsed : Visibility.Visible;
         if (IsDuplex && string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = AppSettings.Get("DuplexName") ?? string.Empty;
+    }
+
+    private void RecurseBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (IsDuplex || NameLabel is null || NameBox is null) return;
+        var showName = RecurseBox.IsChecked != true;
+        NameLabel.Visibility = showName ? Visibility.Visible : Visibility.Collapsed;
+        NameBox.Visibility = showName ? Visibility.Visible : Visibility.Collapsed;
     }
 
     public void RefreshFromCurrentAlbum()
@@ -158,6 +168,7 @@ public sealed partial class RenameWorkspace : UserControl
         var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         start.ArgumentList.Add("-NoProfile"); start.ArgumentList.Add("-ExecutionPolicy"); start.ArgumentList.Add("Bypass"); start.ArgumentList.Add("-File"); start.ArgumentList.Add(scriptPath); start.ArgumentList.Add("-Path"); start.ArgumentList.Add(FolderPathBox.Text);
         if (IsDuplex) { start.ArgumentList.Add("-Name"); start.ArgumentList.Add(NameBox.Text.Trim()); start.ArgumentList.Add("-Start"); start.ArgumentList.Add(StartBox.Text.Trim()); }
+        if (!IsDuplex && RecurseBox.IsChecked != true && !string.IsNullOrWhiteSpace(NameBox.Text)) { start.ArgumentList.Add("-NameOverride"); start.ArgumentList.Add(NameBox.Text.Trim()); }
         if (!IsDuplex && RecurseBox.IsChecked == true) start.ArgumentList.Add("-Recurse");
         if (dryRun) start.ArgumentList.Add("-DryRun");
         try
