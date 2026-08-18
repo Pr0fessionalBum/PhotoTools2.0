@@ -12,7 +12,12 @@ public sealed class FileBrowserItem
     public long Size { get; set; }
     public DateTime Modified { get; set; }
     public string Extension => System.IO.Path.GetExtension(Path).TrimStart('.').ToUpperInvariant();
-    public ImageSource? ThumbnailUri => IsImage ? new BitmapImage(new Uri(Path)) : null;
+    public ImageSource? ThumbnailUri => IsImage ? new BitmapImage
+    {
+        UriSource = new Uri(Path),
+        DecodePixelWidth = 320,
+        CreateOptions = BitmapCreateOptions.IgnoreImageCache
+    } : null;
     public string FallbackGlyph => IsFolder ? "\uE8B7" : "\uE7C3";
     public string Details => IsFolder ? "Folder" : FormatSize(Size);
 

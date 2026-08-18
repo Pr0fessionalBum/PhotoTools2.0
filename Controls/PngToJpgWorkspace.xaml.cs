@@ -24,6 +24,12 @@ public sealed partial class PngToJpgWorkspace : UserControl
     }
 
     public void RefreshFromCurrentAlbum() { var path = AppSettings.Get("CurrentAlbumPath"); if (Directory.Exists(path)) LoadFolder(path); }
+    public void LoadAlbumSelection(string folderPath, IReadOnlyCollection<string> selectedPaths)
+    {
+        LoadFolder(folderPath);
+        var selected = selectedPaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in PngImages.Where(item => !item.IsFolder && selected.Contains(item.Path))) PngGrid.SelectedItems.Add(item);
+    }
     private async void ChooseFolder_Click(object sender, RoutedEventArgs e) { if (await FolderBrowserService.PickFolderAsync() is { } path) LoadFolder(path); }
     private void Workspace_DragEnter(object sender, DragEventArgs e) { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; }
     private async void Workspace_Drop(object sender, DragEventArgs e) { if (e.DataView.Contains(StandardDataFormats.StorageItems) && (await e.DataView.GetStorageItemsAsync()).FirstOrDefault() is StorageFolder folder) LoadFolder(folder.Path); }

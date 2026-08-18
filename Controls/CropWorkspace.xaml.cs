@@ -31,6 +31,13 @@ public sealed partial class CropWorkspace : UserControl
         if (Directory.Exists(path)) LoadFolder(path);
     }
 
+    public void LoadAlbumSelection(string folderPath, IReadOnlyCollection<string> selectedPaths)
+    {
+        LoadFolder(folderPath);
+        var selected = selectedPaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in SourceImages.Where(item => !item.IsFolder && selected.Contains(item.Path))) SourceGrid.SelectedItems.Add(item);
+    }
+
     private async void ChooseFolder_Click(object sender, RoutedEventArgs e)
     {
         if (await FolderBrowserService.PickFolderAsync() is { } path) LoadFolder(path);

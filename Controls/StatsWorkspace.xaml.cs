@@ -30,6 +30,8 @@ public sealed partial class StatsWorkspace : UserControl
         if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path)) SetFolder(path);
     }
 
+    public void LoadAlbumFolder(string folderPath) => SetFolder(folderPath);
+
     private async void ChooseFolder_Click(object sender, RoutedEventArgs e)
     {
         if (await FolderBrowserService.PickFolderAsync() is { } path) SetFolder(path);

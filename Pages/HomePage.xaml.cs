@@ -14,16 +14,23 @@ public sealed partial class HomePage : Page
 {
     private readonly List<AlbumItem> _allAlbums = [];
     private readonly List<FileBrowserItem> _allBrowserItems = [];
+    private readonly Stack<string> _folderHistory = [];
     private string? _currentFolderPath;
     private bool _fileSortDescending;
+    private bool _suppressAlbumSelection;
+    private bool _watchRefreshRunning;
+    private bool _watchRefreshPending;
+    private FileSystemWatcher? _collectionWatcher;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _refreshDebounceTimer;
     public ObservableCollection<AlbumItem> Albums { get; } = [];
     public ObservableCollection<FileBrowserItem> BrowserItems { get; } = [];
 
     public HomePage()
     {
         InitializeComponent();
-        CropWorkspace.ContinueToReplacements += (_, _) => ShowWorkspace(2);
-        ConvertWorkspace.ContinueToReplacements += (_, _) => ShowWorkspace(2);
+        CropWorkspace.ContinueToReplacements += (_, _) => OpenImageProcessingTab(2);
+        ConvertWorkspace.ContinueToReplacements += (_, _) => OpenImageProcessingTab(2);
+        ImageViewerService.OpenFailed += (_, message) => { StatusBar.Severity = InfoBarSeverity.Error; StatusBar.Message = $"The image viewer could not open: {message}"; };
     }
 
     private async void Page_Loaded(object sender, RoutedEventArgs e)
@@ -32,6 +39,13 @@ public sealed partial class HomePage : Page
         {
             await LoadCollectionAsync(savedPath);
         }
+    }
+
+    private void Page_Unloaded(object sender, RoutedEventArgs e)
+    {
+        _refreshDebounceTimer?.Stop();
+        _collectionWatcher?.Dispose();
+        _collectionWatcher = null;
     }
 
     private async void BrowseButton_Click(object sender, RoutedEventArgs e)
@@ -61,6 +75,9 @@ public sealed partial class HomePage : Page
             _allAlbums.AddRange(results);
             ApplyFilter();
             if (Albums.Count > 0) AlbumList.SelectedIndex = 0;
+            _folderHistory.Clear();
+            ConfigureCollectionWatcher(path);
+            NewFolderButton.IsEnabled = true;
             StatusBar.Severity = InfoBarSeverity.Success;
             StatusBar.Message = $"Loaded {_allAlbums.Count:N0} albums. Right-click an album for actions.";
         }
@@ -72,6 +89,95 @@ public sealed partial class HomePage : Page
         finally { RefreshButton.IsEnabled = true; }
     }
 
+    private void ConfigureCollectionWatcher(string path)
+    {
+        _collectionWatcher?.Dispose();
+        _collectionWatcher = null;
+        try
+        {
+            var watcher = new FileSystemWatcher(path)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                InternalBufferSize = 16 * 1024
+            };
+            watcher.Created += CollectionChanged;
+            watcher.Deleted += CollectionChanged;
+            watcher.Changed += CollectionChanged;
+            watcher.Renamed += CollectionRenamed;
+            watcher.Error += CollectionWatcher_Error;
+            watcher.EnableRaisingEvents = true;
+            _collectionWatcher = watcher;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            StatusBar.Severity = InfoBarSeverity.Warning;
+            StatusBar.Message = $"Albums loaded, but automatic refresh could not start: {ex.Message}";
+        }
+    }
+
+    private void CollectionChanged(object sender, FileSystemEventArgs e) => ScheduleAutomaticRefresh();
+    private void CollectionRenamed(object sender, RenamedEventArgs e) => ScheduleAutomaticRefresh();
+    private void CollectionWatcher_Error(object sender, ErrorEventArgs e) => ScheduleAutomaticRefresh();
+
+    private void ScheduleAutomaticRefresh()
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _refreshDebounceTimer ??= DispatcherQueue.CreateTimer();
+            _refreshDebounceTimer.Interval = TimeSpan.FromMilliseconds(650);
+            _refreshDebounceTimer.IsRepeating = false;
+            _refreshDebounceTimer.Tick -= RefreshDebounceTimer_Tick;
+            _refreshDebounceTimer.Tick += RefreshDebounceTimer_Tick;
+            _refreshDebounceTimer.Stop();
+            _refreshDebounceTimer.Start();
+        });
+    }
+
+    private async void RefreshDebounceTimer_Tick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    {
+        sender.Stop();
+        if (_watchRefreshRunning) { _watchRefreshPending = true; return; }
+        await RefreshFromWatcherAsync();
+    }
+
+    private async Task RefreshFromWatcherAsync()
+    {
+        var collectionPath = CollectionPathBox.Text;
+        if (!Directory.Exists(collectionPath)) return;
+        _watchRefreshRunning = true;
+        var selectedAlbumPath = (AlbumList.SelectedItem as AlbumItem)?.Path;
+        var selectedFilePaths = FileGrid.SelectedItems.Cast<FileBrowserItem>().Select(item => item.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var viewedFolder = _currentFolderPath;
+        try
+        {
+            var results = await Task.Run(() => AlbumScanner.ScanCollection(collectionPath));
+            _suppressAlbumSelection = true;
+            _allAlbums.Clear(); _allAlbums.AddRange(results); ApplyFilter();
+            var albumIndex = selectedAlbumPath is null ? -1 : Albums.ToList().FindIndex(album => string.Equals(album.Path, selectedAlbumPath, StringComparison.OrdinalIgnoreCase));
+            AlbumList.SelectedIndex = albumIndex;
+            _suppressAlbumSelection = false;
+
+            if (viewedFolder is not null && Directory.Exists(viewedFolder)) await LoadFolderContentsAsync(viewedFolder, false);
+            else if (albumIndex >= 0) await LoadFolderContentsAsync(Albums[albumIndex].Path, false);
+            else { _currentFolderPath = null; _allBrowserItems.Clear(); BrowserItems.Clear(); FileCountText.Text = "0 items"; }
+            foreach (var browserItem in BrowserItems.Where(item => selectedFilePaths.Contains(item.Path))) FileGrid.SelectedItems.Add(browserItem);
+            StatusBar.Severity = InfoBarSeverity.Informational;
+            StatusBar.Message = "Album Hub updated automatically.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            StatusBar.Severity = InfoBarSeverity.Warning;
+            StatusBar.Message = $"Automatic refresh will retry after the next change: {ex.Message}";
+        }
+        finally
+        {
+            _suppressAlbumSelection = false;
+            _watchRefreshRunning = false;
+            if (_watchRefreshPending) { _watchRefreshPending = false; ScheduleAutomaticRefresh(); }
+        }
+    }
+
     private void SearchBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args) => ApplyFilter();
 
     private void ToolButton_Click(object sender, RoutedEventArgs e)
@@ -79,22 +185,55 @@ public sealed partial class HomePage : Page
         if (sender is Button { Tag: string tab } && int.TryParse(tab, out var index))
         {
             ShowWorkspace(index);
-            if (index == 1) CropWorkspace.RefreshFromCurrentAlbum();
-            if (index == 2) ReplacementWorkspace.RefreshFromCurrentAlbum();
-            if (index == 3) ConvertWorkspace.RefreshFromCurrentAlbum();
-            if (index == 4) DuplexWorkspace.RefreshFromCurrentAlbum();
-            if (index == 5) NumberingWorkspace.RefreshFromCurrentAlbum();
-            if (index == 6) StatsWorkspace.RefreshFromCurrentAlbum();
-            if (index == 7) ScannerLineWorkspace.RefreshFromCurrentAlbum();
+            RefreshActiveGroupedTool(index);
         }
     }
 
     private void ShowWorkspace(int index)
     {
-        FrameworkElement[] workspaces = [AlbumsWorkspace, CropWorkspace, ReplacementWorkspace,
-            ConvertWorkspace, DuplexWorkspace, NumberingWorkspace, StatsWorkspace, ScannerLineWorkspace];
+        FrameworkElement[] workspaces = [AlbumsWorkspace, ImageProcessingWorkspace, NumberingToolsWorkspace, AnalysisWorkspace];
         for (var i = 0; i < workspaces.Length; i++)
             workspaces[i].Visibility = i == index ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void RefreshActiveGroupedTool(int group)
+    {
+        if (group == 1) RefreshImageProcessingTab();
+        else if (group == 2) RefreshNumberingTab();
+        else if (group == 3) RefreshAnalysisTab();
+    }
+
+    private void OpenImageProcessingTab(int tabIndex)
+    {
+        ShowWorkspace(1);
+        ImageProcessingWorkspace.SelectedIndex = tabIndex;
+        RefreshImageProcessingTab();
+    }
+
+    private void ImageProcessingTabs_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshImageProcessingTab();
+    private void NumberingTabs_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshNumberingTab();
+    private void AnalysisTabs_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshAnalysisTab();
+
+    private void RefreshImageProcessingTab()
+    {
+        if (ImageProcessingWorkspace is null || ImageProcessingWorkspace.Visibility != Visibility.Visible) return;
+        if (ImageProcessingWorkspace.SelectedIndex == 0) CropWorkspace.RefreshFromCurrentAlbum();
+        else if (ImageProcessingWorkspace.SelectedIndex == 1) ConvertWorkspace.RefreshFromCurrentAlbum();
+        else if (ImageProcessingWorkspace.SelectedIndex == 2) ReplacementWorkspace.RefreshFromCurrentAlbum();
+    }
+
+    private void RefreshNumberingTab()
+    {
+        if (NumberingToolsWorkspace is null || NumberingToolsWorkspace.Visibility != Visibility.Visible) return;
+        if (NumberingToolsWorkspace.SelectedIndex == 0) DuplexWorkspace.RefreshFromCurrentAlbum();
+        else if (NumberingToolsWorkspace.SelectedIndex == 1) NumberingWorkspace.RefreshFromCurrentAlbum();
+    }
+
+    private void RefreshAnalysisTab()
+    {
+        if (AnalysisWorkspace is null || AnalysisWorkspace.Visibility != Visibility.Visible) return;
+        if (AnalysisWorkspace.SelectedIndex == 0) StatsWorkspace.RefreshFromCurrentAlbum();
+        else if (AnalysisWorkspace.SelectedIndex == 1) ScannerLineWorkspace.RefreshFromCurrentAlbum();
     }
 
     private void ExternalToolButton_Click(object sender, RoutedEventArgs e)
@@ -119,19 +258,22 @@ public sealed partial class HomePage : Page
 
     private async void AlbumList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_suppressAlbumSelection) return;
         if (AlbumList.SelectedItem is not AlbumItem album) return;
         SelectedAlbumName.Text = album.Name;
         SelectedAlbumPath.Text = album.Path;
         UseSelectedButton.IsEnabled = true;
         OpenSelectedButton.IsEnabled = true;
-        await LoadFolderContentsAsync(album.Path);
+        _folderHistory.Clear();
+        await LoadFolderContentsAsync(album.Path, false);
     }
 
-    private async Task LoadFolderContentsAsync(string path)
+    private async Task LoadFolderContentsAsync(string path, bool addToHistory = true)
     {
+        if (addToHistory && _currentFolderPath is not null && !string.Equals(_currentFolderPath, path, StringComparison.OrdinalIgnoreCase)) _folderHistory.Push(_currentFolderPath);
         _currentFolderPath = path;
         SelectedAlbumPath.Text = path;
-        BackFolderButton.IsEnabled = !string.Equals(path, CollectionPathBox.Text, StringComparison.OrdinalIgnoreCase);
+        UpdateFolderNavigationButtons();
         try
         {
             var items = await Task.Run(() => EnumerateFolder(path));
@@ -209,6 +351,56 @@ public sealed partial class HomePage : Page
             : $"{FileGrid.SelectedItems.Count:N0} of {BrowserItems.Count:N0} selected";
     }
 
+    private void SendToTool_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not string route || _currentFolderPath is null) return;
+        var selectedItems = FileGrid.SelectedItems.Cast<FileBrowserItem>().ToArray();
+        var selectedFiles = selectedItems.Where(item => !item.IsFolder && item.IsImage).Select(item => item.Path).ToArray();
+        var selectedFolders = selectedItems.Where(item => item.IsFolder && Directory.Exists(item.Path)).ToArray();
+        var folderPath = selectedFiles.Length == 0 && selectedFolders.Length == 1 ? selectedFolders[0].Path : _currentFolderPath;
+        if (!Directory.Exists(folderPath)) return;
+
+        AppSettings.Set("CurrentAlbumPath", folderPath);
+        switch (route)
+        {
+            case "1:0": ShowWorkspace(1); ImageProcessingWorkspace.SelectedIndex = 0; CropWorkspace.LoadAlbumSelection(folderPath, selectedFiles); break;
+            case "1:1": ShowWorkspace(1); ImageProcessingWorkspace.SelectedIndex = 1; ConvertWorkspace.LoadAlbumSelection(folderPath, selectedFiles); break;
+            case "1:2": ShowWorkspace(1); ImageProcessingWorkspace.SelectedIndex = 2; ReplacementWorkspace.LoadAlbumFolder(folderPath); break;
+            case "2:0": ShowWorkspace(2); NumberingToolsWorkspace.SelectedIndex = 0; DuplexWorkspace.LoadAlbumFolder(folderPath); break;
+            case "2:1": ShowWorkspace(2); NumberingToolsWorkspace.SelectedIndex = 1; NumberingWorkspace.LoadAlbumFolder(folderPath); break;
+            case "3:0": ShowWorkspace(3); AnalysisWorkspace.SelectedIndex = 0; StatsWorkspace.LoadAlbumFolder(folderPath); break;
+            case "3:1": ShowWorkspace(3); AnalysisWorkspace.SelectedIndex = 1; ScannerLineWorkspace.LoadAlbumSelection(folderPath, selectedFiles); break;
+            default: return;
+        }
+        StatusBar.Severity = InfoBarSeverity.Success;
+        StatusBar.Message = selectedFiles.Length > 0
+            ? $"Sent {selectedFiles.Length:N0} selected image(s) to the tool."
+            : $"Opened {Path.GetFileName(folderPath)} in the tool.";
+    }
+
+    private void SendToToolMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button) return;
+        var menu = new MenuFlyout();
+        AddTool("Image Processing · Crop / Trim", "1:0");
+        AddTool("Image Processing · PNG to JPG", "1:1");
+        AddTool("Image Processing · Replacements", "1:2");
+        menu.Items.Add(new MenuFlyoutSeparator());
+        AddTool("Numbering · Front / Back", "2:0");
+        AddTool("Numbering · Fix Numbering", "2:1");
+        menu.Items.Add(new MenuFlyoutSeparator());
+        AddTool("Analysis · Photo Stats", "3:0");
+        AddTool("Analysis · Scanner Lines", "3:1");
+        menu.ShowAt(button);
+
+        void AddTool(string text, string route)
+        {
+            var item = new MenuFlyoutItem { Text = text, Tag = route };
+            item.Click += SendToTool_Click;
+            menu.Items.Add(item);
+        }
+    }
+
     private void FileGrid_ItemClick(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is FileBrowserItem item)
@@ -219,7 +411,9 @@ public sealed partial class HomePage : Page
     {
         if ((sender as FrameworkElement)?.Tag is FileBrowserItem item)
         {
-            if (item.IsFolder) _ = LoadFolderContentsAsync(item.Path); else OpenFile(item.Path);
+            if (item.IsFolder) _ = LoadFolderContentsAsync(item.Path);
+            else if (item.IsImage) ImageViewerService.Open(BrowserItems, item.Path);
+            else OpenFile(item.Path);
         }
     }
 
@@ -232,22 +426,80 @@ public sealed partial class HomePage : Page
     {
         if (FileGrid.SelectedItem is not FileBrowserItem item) return;
         if (item.IsFolder) await LoadFolderContentsAsync(item.Path);
+        else if (item.IsImage) ImageViewerService.Open(BrowserItems, item.Path);
         else OpenFile(item.Path);
     }
 
     private void FileGrid_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
         if (e.Key != Windows.System.VirtualKey.Enter || FileGrid.SelectedItem is not FileBrowserItem item) return;
-        if (item.IsFolder) _ = LoadFolderContentsAsync(item.Path); else OpenFile(item.Path);
+        if (item.IsFolder) _ = LoadFolderContentsAsync(item.Path);
+        else if (item.IsImage) ImageViewerService.Open(BrowserItems, item.Path);
+        else OpenFile(item.Path);
         e.Handled = true;
     }
 
     private async void BackFolder_Click(object sender, RoutedEventArgs e)
     {
+        while (_folderHistory.Count > 0)
+        {
+            var previous = _folderHistory.Pop();
+            if (Directory.Exists(previous)) { await LoadFolderContentsAsync(previous, false); return; }
+        }
+        UpdateFolderNavigationButtons();
+    }
+
+    private async void UpFolder_Click(object sender, RoutedEventArgs e)
+    {
         if (_currentFolderPath is null) return;
         var parent = Directory.GetParent(_currentFolderPath)?.FullName;
-        if (parent is not null && parent.StartsWith(CollectionPathBox.Text, StringComparison.OrdinalIgnoreCase))
-            await LoadFolderContentsAsync(parent);
+        if (parent is not null && IsInsideCollection(parent)) await LoadFolderContentsAsync(parent);
+    }
+
+    private void UpdateFolderNavigationButtons()
+    {
+        BackFolderButton.IsEnabled = _folderHistory.Any(Directory.Exists);
+        var parent = _currentFolderPath is null ? null : Directory.GetParent(_currentFolderPath)?.FullName;
+        UpFolderButton.IsEnabled = parent is not null && IsInsideCollection(parent);
+        NewFolderButton.IsEnabled = (_currentFolderPath is not null && Directory.Exists(_currentFolderPath)) || Directory.Exists(CollectionPathBox.Text);
+        SendToToolButton.IsEnabled = _currentFolderPath is not null && Directory.Exists(_currentFolderPath);
+    }
+
+    private bool IsInsideCollection(string path)
+    {
+        try
+        {
+            var root = Path.GetFullPath(CollectionPathBox.Text).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var candidate = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    private async void NewFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var parent = _currentFolderPath is not null && Directory.Exists(_currentFolderPath) ? _currentFolderPath : CollectionPathBox.Text;
+        if (!Directory.Exists(parent)) return;
+        var nameBox = new TextBox { Header = "Folder name", PlaceholderText = "New folder", MinWidth = 360 };
+        var dialog = new ContentDialog { Title = "Create a new folder", Content = nameBox, PrimaryButtonText = "Create", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary, XamlRoot = XamlRoot };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        var name = nameBox.Text.Trim();
+        if (name.Length == 0 || name is "." or ".." || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.Contains(Path.DirectorySeparatorChar) || name.Contains(Path.AltDirectorySeparatorChar))
+        {
+            StatusBar.Severity = InfoBarSeverity.Warning; StatusBar.Message = "Enter a valid folder name without slashes or reserved characters."; return;
+        }
+        var newPath = Path.Combine(parent, name);
+        if (Directory.Exists(newPath) || File.Exists(newPath)) { StatusBar.Severity = InfoBarSeverity.Warning; StatusBar.Message = $"An item named '{name}' already exists."; return; }
+        try
+        {
+            Directory.CreateDirectory(newPath);
+            await LoadFolderContentsAsync(parent, false);
+            StatusBar.Severity = InfoBarSeverity.Success; StatusBar.Message = $"Created folder '{name}'.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            StatusBar.Severity = InfoBarSeverity.Error; StatusBar.Message = $"Could not create the folder: {ex.Message}";
+        }
     }
 
     private void UseSelectedAlbum_Click(object sender, RoutedEventArgs e)

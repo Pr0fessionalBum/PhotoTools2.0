@@ -20,6 +20,18 @@ public sealed partial class ScannerLineWorkspace : UserControl
 
     public ScannerLineWorkspace() { InitializeComponent(); FolderItemsList.ItemsSource = FolderItems; ResultsGrid.ItemsSource = Results; }
     public void RefreshFromCurrentAlbum() { var path = AppSettings.Get("CurrentAlbumPath"); if (Directory.Exists(path)) LoadFolder(path); }
+    public void LoadAlbumSelection(string folderPath, IReadOnlyCollection<string> selectedPaths)
+    {
+        LoadFolder(folderPath);
+        var selected = selectedPaths.Where(File.Exists).Where(IsImage).ToArray();
+        if (selected.Length > 0)
+        {
+            _analysisFiles = selected;
+            ImageCountText.Text = $"{selected.Length:N0} selected images";
+            AnalyzeButton.IsEnabled = true;
+            StatusText.Text = "Ready to analyze the images sent from Album Hub.";
+        }
+    }
     private async void ChooseFolder_Click(object sender, RoutedEventArgs e) { if (await FolderBrowserService.PickFolderAsync() is { } path) LoadFolder(path); }
     private void LoadFolder(string path)
     {
@@ -55,7 +67,7 @@ public sealed partial class ScannerLineWorkspace : UserControl
     private void SetBusy(bool busy) { BusyRing.IsActive = busy; AnalyzeButton.IsEnabled = !busy && FolderItems.Any(item => !item.IsFolder); CancelButton.IsEnabled = busy; if (busy) AnalysisProgress.Value = 0; }
     private void Cancel_Click(object sender, RoutedEventArgs e) { CancelButton.IsEnabled = false; StatusText.Text = "Cancelling analysis..."; _cancellation?.Cancel(); }
     private void FolderItemsList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) { if (FolderItemsList.SelectedItem is FileBrowserItem item) FolderBrowserService.OpenItem(item, LoadFolder); }
-    private async void ResultsGrid_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) { if (ResultsGrid.SelectedItem is ScannerLineResult item) await ShowLinePreviewAsync(item); }
+    private void ResultsGrid_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) { if (ResultsGrid.SelectedItem is ScannerLineResult item) ImageViewerService.OpenScannerComparisons(Results, item); }
     private async Task ShowLinePreviewAsync(ScannerLineResult item)
     {
         try

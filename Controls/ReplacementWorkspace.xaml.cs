@@ -26,6 +26,8 @@ public sealed partial class ReplacementWorkspace : UserControl
         if (Directory.Exists(path)) LoadAlbum(path);
     }
 
+    public void LoadAlbumFolder(string folderPath) => LoadAlbum(folderPath);
+
     private async void ChooseFolder_Click(object sender, RoutedEventArgs e)
     {
         if (await FolderBrowserService.PickFolderAsync() is { } path) { AppSettings.Set("CurrentAlbumPath", path); LoadAlbum(path); }

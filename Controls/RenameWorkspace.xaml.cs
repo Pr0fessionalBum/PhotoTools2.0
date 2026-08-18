@@ -69,6 +69,12 @@ public sealed partial class RenameWorkspace : UserControl
         if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path)) LoadFolder(path);
     }
 
+    public void LoadAlbumFolder(string folderPath)
+    {
+        ConfigureMode();
+        LoadFolder(folderPath);
+    }
+
     private async void ChooseFolder_Click(object sender, RoutedEventArgs e)
     {
         if (await FolderBrowserService.PickFolderAsync() is { } path) LoadFolder(path);
