@@ -1,5 +1,7 @@
 # Photo Tools 2.0
 
+**[Browse the full documentation](docs/index.html)** — installation, user guide, architecture, development, and repeatable testing.
+
 Photo Tools 2.0 is a Windows desktop application for organizing and processing scanned photo collections. It combines a modern WinUI file-browser interface with cropping, conversion, replacement, renaming, statistics, and scanner-line inspection tools.
 
 The application is designed for local photo workflows. Files remain on the computer, and potentially destructive operations provide previews, cancellation, or safety checks where appropriate.
