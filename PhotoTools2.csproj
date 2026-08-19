@@ -31,6 +31,8 @@
 
   <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />
+    <!-- The standalone accuracy runner has its own project and must not be compiled into the WinUI app. -->
+    <Compile Remove="Tools\**\*.cs" />
     <Content Include="Scripts\*.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

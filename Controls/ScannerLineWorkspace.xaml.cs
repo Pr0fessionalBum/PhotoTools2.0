@@ -81,7 +81,8 @@ public sealed partial class ScannerLineWorkspace : UserControl
             {
                 var info = new FileInfo(group.Key); var strongest = group.OrderByDescending(item => item.Confidence).First();
                 var direction = strongest.IsHorizontal ? "horizontal" : "vertical";
-                var reasons = $"{strongest.Coverage:P0} {direction} coverage, about {strongest.WidthPixels}px wide" + (strongest.BatchMatches > 0 ? $", confirmed in {strongest.BatchMatches:N0} other image(s)" : ", detected from this image alone");
+                var reasons = $"{strongest.Coverage:P0} coverage, {strongest.Continuity:P0} gap-tolerant continuity, largest gap {strongest.LargestMissingGapBands:N0}/32 bands, {strongest.WidthConsistency:P0} width stability, about {strongest.WidthPixels}px wide"
+                    + (strongest.BatchMatches > 0 ? $", confirmed in {strongest.BatchMatches:N0} other image(s)" : $", {direction}, detected from this image alone");
                 Results.Add(new ScannerLineResult { Photo = new FileBrowserItem { Name = info.Name, Path = info.FullName, IsImage = true, Size = info.Length, Modified = info.LastWriteTime }, PositionLabel = string.Join(", ", group.Select(item => $"{(item.IsHorizontal ? "Horizontal" : "Vertical")} line near {item.Position:P0}")), ConfidencePercent = strongest.Confidence * 100, ConfidenceLabel = $"{strongest.Confidence:P0} confidence", LinePosition = strongest.Position, IsHorizontal = strongest.IsHorizontal, Explanation = reasons });
             }
             ResultSummaryText.Text = result.Lines.Count == 0 ? $"No high-confidence scanner lines found across {result.AnalyzedCount:N0} images." : $"{result.Lines.Count:N0} candidate line position(s) found; {Results.Count:N0} images flagged.";

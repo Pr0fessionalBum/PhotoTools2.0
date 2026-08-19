@@ -197,6 +197,30 @@ The suite creates fixed `Small`, `Large`, and `Mixed` cases under `performance-f
 
 Use `-Regenerate` to rebuild the fixtures from the fixed seed. Both generated fixtures and results are excluded from Git.
 
+To generate a fixed number of images containing deterministic scanner lines in each case, use:
+
+```powershell
+.\Scripts\Invoke-PhotoToolsPerformanceSuite.ps1 -Case All -ScannerLineImagesPerCase 40 -InterruptedScannerLineImagesPerCase 12 -Regenerate
+```
+
+Injected lines alternate between vertical and horizontal and vary in seeded position, width, and signed local contrast. Every image has a unique seeded, photo-like gradient and texture instead of sharing cloned noise templates. A configurable subset contains one to three deterministic interruptions. Each case writes `scanner-line-ground-truth.json`, which records exact line measurements and interruption ranges; generated images not listed in that file are clean controls.
+
+Run the detector-specific accuracy test against a generated case with:
+
+```powershell
+.\Scripts\Measure-ScannerLineAccuracy.ps1 .\performance-fixtures\small -Sensitivity 0.55 -TargetAccuracy 90
+```
+
+The console colors accuracy, precision, recall, and interrupted-line accuracy green, yellow, or red relative to the target. Detailed JSON and text reports are written under `performance-results` and `test results`.
+
+Windows batch launchers are also available under `Scripts`:
+
+- `Generate-ScannerLineTestFixtures.bat` regenerates all deterministic fixtures with 40 line images and 12 interrupted lines per case.
+- `Run-PhotoToolsPerformanceSuite.bat` runs the complete generated performance suite.
+- `Run-ScannerLineAccuracyTest.bat` tests the Small scanner-line fixture at sensitivity `0.55` with a 90% target.
+
+Double-click a launcher to use its defaults, or run it from Command Prompt with the same arguments accepted by its underlying PowerShell script.
+
 Every benchmark also writes a readable text summary into the project-level `test results` folder. Detailed JSON remains in `performance-results` for automated baseline comparisons.
 
 ## Status

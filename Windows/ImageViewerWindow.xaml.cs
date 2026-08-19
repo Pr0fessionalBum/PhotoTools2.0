@@ -26,6 +26,7 @@ public sealed partial class ImageViewerWindow : Window
     private uint _sourcePixelWidth;
     private uint _sourcePixelHeight;
     private int _rotationQuarterTurns;
+    private readonly Dictionary<string, int> _pendingRotations = new(StringComparer.OrdinalIgnoreCase);
     private bool _updatingZoom;
     private bool _dragging;
     private global::Windows.Foundation.Point _dragStart;
@@ -63,6 +64,8 @@ public sealed partial class ImageViewerWindow : Window
         OriginalPaneLabel.Text = "Image";
         _paths = paths.Where(File.Exists).ToArray();
         if (_paths.Length == 0) return;
+        foreach (var path in _pendingRotations.Keys.Where(path => !_paths.Contains(path, StringComparer.OrdinalIgnoreCase)).ToArray())
+            _pendingRotations.Remove(path);
         _index = Math.Clamp(selectedIndex, 0, _paths.Length - 1);
         _ = LoadCurrentAsync(true);
     }
@@ -99,13 +102,10 @@ public sealed partial class ImageViewerWindow : Window
             var decodedHeight = Math.Max(1, (int)Math.Round(pixelHeight * decodeScale));
             _decodedWidth = decodedWidth;
             _decodedHeight = decodedHeight;
-            _rotationQuarterTurns = 0;
+            _rotationQuarterTurns = _pendingRotations.GetValueOrDefault(path);
             ViewerTransform.Rotation = 0;
             ViewerTransform.TranslateX = 0;
             ViewerTransform.TranslateY = 0;
-            ResetEditsButton.IsEnabled = false;
-            SaveChangesButton.IsEnabled = false;
-            EditStatusText.Text = "No pending edits";
 
             ViewerImage.Source = null;
             _currentBitmap = new BitmapImage
@@ -119,6 +119,7 @@ public sealed partial class ImageViewerWindow : Window
             ImageSurface.Width = decodedWidth;
             ImageSurface.Height = decodedHeight;
             ViewerImage.Source = _currentBitmap;
+            ApplyRotationPreview(false);
             HighlightSurface.Width = decodedWidth;
             HighlightSurface.Height = decodedHeight;
             HighlightImage.Width = decodedWidth;
@@ -278,20 +279,28 @@ public sealed partial class ImageViewerWindow : Window
     private void RotateRight_Click(object sender, RoutedEventArgs e) { _rotationQuarterTurns = (_rotationQuarterTurns + 1) % 4; ApplyRotationPreview(); }
     private void ResetEdits_Click(object sender, RoutedEventArgs e) { _rotationQuarterTurns = 0; ApplyRotationPreview(); }
 
-    private void ApplyRotationPreview()
+    private void ApplyRotationPreview(bool resizeAndFit = true)
     {
+        if (CurrentPath is { } path)
+        {
+            if (_rotationQuarterTurns == 0) _pendingRotations.Remove(path);
+            else _pendingRotations[path] = _rotationQuarterTurns;
+        }
         ViewerTransform.Rotation = _rotationQuarterTurns * 90;
         ViewerTransform.TranslateX = _rotationQuarterTurns switch { 1 => _decodedHeight, 2 => _decodedWidth, _ => 0 };
         ViewerTransform.TranslateY = _rotationQuarterTurns switch { 2 => _decodedHeight, 3 => _decodedWidth, _ => 0 };
         var sideways = _rotationQuarterTurns % 2 == 1;
         ImageSurface.Width = sideways ? _decodedHeight : _decodedWidth;
         ImageSurface.Height = sideways ? _decodedWidth : _decodedHeight;
-        ResizeForImage(sideways ? _sourcePixelHeight : _sourcePixelWidth, sideways ? _sourcePixelWidth : _sourcePixelHeight);
+        if (resizeAndFit) ResizeForImage(sideways ? _sourcePixelHeight : _sourcePixelWidth, sideways ? _sourcePixelWidth : _sourcePixelHeight);
         var edited = _rotationQuarterTurns != 0;
         ResetEditsButton.IsEnabled = edited;
-        SaveChangesButton.IsEnabled = edited;
-        EditStatusText.Text = edited ? $"Pending rotation: {_rotationQuarterTurns * 90}° clockwise" : "No pending edits";
-        ScheduleFitAfterLayout();
+        ApplyRotationsButton.IsEnabled = _pendingRotations.Count > 0;
+        ApplyRotationsButton.Content = _pendingRotations.Count == 0 ? "Apply all rotations" : $"Apply all ({_pendingRotations.Count:N0})";
+        EditStatusText.Text = edited
+            ? $"Current: {_rotationQuarterTurns * 90}° clockwise · {_pendingRotations.Count:N0} queued"
+            : _pendingRotations.Count == 0 ? "No pending rotations" : $"{_pendingRotations.Count:N0} rotation(s) queued";
+        if (resizeAndFit) ScheduleFitAfterLayout();
     }
 
     private void ScheduleFitAfterLayout()
@@ -305,38 +314,45 @@ public sealed partial class ImageViewerWindow : Window
         });
     }
 
-    private async void SaveChanges_Click(object sender, RoutedEventArgs e)
+    private async void ApplyRotations_Click(object sender, RoutedEventArgs e)
     {
-        if (CurrentPath is not { } source || _rotationQuarterTurns == 0) return;
-        var extension = Path.GetExtension(source).ToLowerInvariant();
-        var directory = Path.GetDirectoryName(source)!;
-        var temporary = Path.Combine(directory, $".{Path.GetFileNameWithoutExtension(source)}.{Guid.NewGuid():N}.editing{extension}");
-        var originalCreationTime = File.GetCreationTimeUtc(source);
-        SaveChangesButton.IsEnabled = false;
-        EditStatusText.Text = "Applying rotation...";
-        try
+        if (_pendingRotations.Count == 0) return;
+        var edits = _paths.Where(_pendingRotations.ContainsKey).Select(path => (Path: path, Rotation: _pendingRotations[path])).ToArray();
+        var dialog = new ContentDialog { XamlRoot = RootGrid.XamlRoot, Title = "Apply all queued rotations?", Content = $"This will rotate {edits.Length:N0} original image(s).", PrimaryButtonText = "Apply all", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        ApplyRotationsButton.IsEnabled = false;
+        ViewerImage.Source = null;
+        _currentBitmap = null;
+        var completed = 0;
+        var failures = new List<string>();
+        foreach (var edit in edits)
         {
-            string[] arguments = [source, "-auto-orient", "-rotate", (_rotationQuarterTurns * 90).ToString(System.Globalization.CultureInfo.InvariantCulture), temporary];
-            var result = await ImageMagickService.RunAsync(arguments);
-            if (!result.Succeeded) throw new InvalidOperationException(result.ErrorMessage);
-            ViewerImage.Source = null;
-            _currentBitmap = null;
-            File.Move(temporary, source, true);
-            File.SetCreationTimeUtc(source, originalCreationTime);
-            ThumbnailCacheService.Invalidate(source);
-            await LoadCurrentAsync(false);
-            EditStatusText.Text = "Rotation saved to original";
+            var extension = Path.GetExtension(edit.Path).ToLowerInvariant();
+            var temporary = Path.Combine(Path.GetDirectoryName(edit.Path)!, $".{Path.GetFileNameWithoutExtension(edit.Path)}.{Guid.NewGuid():N}.editing{extension}");
+            try
+            {
+                EditStatusText.Text = $"Applying {completed + 1:N0} of {edits.Length:N0}…";
+                var originalCreationTime = File.GetCreationTimeUtc(edit.Path);
+                var result = await ImageMagickService.RunAsync([edit.Path, "-auto-orient", "-rotate", (edit.Rotation * 90).ToString(System.Globalization.CultureInfo.InvariantCulture), temporary]);
+                if (!result.Succeeded) throw new InvalidOperationException(result.ErrorMessage);
+                File.Move(temporary, edit.Path, true);
+                File.SetCreationTimeUtc(edit.Path, originalCreationTime);
+                ThumbnailCacheService.Invalidate(edit.Path);
+                _pendingRotations.Remove(edit.Path);
+                completed++;
+            }
+            catch (Exception ex) { failures.Add($"{Path.GetFileName(edit.Path)}: {ex.Message}"); }
+            finally
+            {
+                try { if (File.Exists(temporary)) File.Delete(temporary); }
+                catch { /* A leftover temporary file is safer than risking the original. */ }
+            }
         }
-        catch (Exception ex)
-        {
-            EditStatusText.Text = $"Save failed: {ex.Message}";
-        }
-        finally
-        {
-            try { if (File.Exists(temporary)) File.Delete(temporary); }
-            catch { /* A leftover temporary file is safer than risking the original. */ }
-            SaveChangesButton.IsEnabled = _rotationQuarterTurns != 0;
-        }
+        await LoadCurrentAsync(false);
+        EditStatusText.Text = failures.Count == 0
+            ? $"Applied {completed:N0} rotation(s)"
+            : $"Applied {completed:N0}; {failures.Count:N0} failed · {string.Join(" | ", failures.Take(2))}";
     }
 
     private void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -347,7 +363,7 @@ public sealed partial class ImageViewerWindow : Window
         else if (e.Key == global::Windows.System.VirtualKey.Subtract) ZoomOut_Click(sender, e);
         else if (e.Key == global::Windows.System.VirtualKey.Q && !_comparisonMode) RotateLeft_Click(sender, e);
         else if (e.Key == global::Windows.System.VirtualKey.E && !_comparisonMode) RotateRight_Click(sender, e);
-        else if (e.Key == global::Windows.System.VirtualKey.Space && SaveChangesButton.IsEnabled) SaveChanges_Click(sender, e);
+        else if (e.Key == global::Windows.System.VirtualKey.Space && ApplyRotationsButton.IsEnabled) ApplyRotations_Click(sender, e);
         else if (e.Key == global::Windows.System.VirtualKey.F) FitImage();
         else return;
         e.Handled = true;
