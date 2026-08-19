@@ -102,7 +102,7 @@ public sealed partial class StatsWorkspace : UserControl
             try
             {
                 foreach (var child in Directory.EnumerateDirectories(folder)) { pending.Push(child); folders++; }
-                foreach (var path in Directory.EnumerateFiles(folder)) if (IsImage(path)) files.Add(new FileInfo(path));
+                foreach (var path in Directory.EnumerateFiles(folder)) if (ImageFileFormats.IsCommonImage(path)) files.Add(new FileInfo(path));
             }
             catch (UnauthorizedAccessException) { }
             catch (DirectoryNotFoundException) { }
@@ -147,7 +147,6 @@ public sealed partial class StatsWorkspace : UserControl
 
     private void Workspace_DragEnter(object sender, DragEventArgs e) { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; }
     private async void Workspace_Drop(object sender, DragEventArgs e) { var items = await e.DataView.GetStorageItemsAsync(); var folder = items.OfType<Windows.Storage.StorageFolder>().FirstOrDefault(); if (folder is not null) SetFolder(folder.Path); }
-    private static bool IsImage(string path) => new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
     private static string FormatBytes(long bytes) { string[] units = ["B", "KB", "MB", "GB", "TB"]; double value = bytes; var unit = 0; while (value >= 1024 && unit < units.Length - 1) { value /= 1024; unit++; } return $"{value:0.##} {units[unit]}"; }
 
     private sealed record StatsResult(string RootPath, int GapMinutes, int PhotoCount, int FolderCount, long TotalBytes, DateTime? OldestModified, DateTime? NewestModified, Dictionary<string, int> Extensions, List<PhotoSessionItem> Sessions)

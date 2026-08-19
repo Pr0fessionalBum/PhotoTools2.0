@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using PhotoTools2.Models;
+using PhotoTools2.Services;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics.Imaging;
 using Windows.Storage;
@@ -315,21 +316,14 @@ public sealed partial class ImageViewerWindow : Window
         EditStatusText.Text = "Applying rotation...";
         try
         {
-            var start = new ProcessStartInfo("magick") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
-            start.ArgumentList.Add(source);
-            start.ArgumentList.Add("-auto-orient");
-            start.ArgumentList.Add("-rotate");
-            start.ArgumentList.Add((_rotationQuarterTurns * 90).ToString(System.Globalization.CultureInfo.InvariantCulture));
-            start.ArgumentList.Add(temporary);
-            using var process = Process.Start(start) ?? throw new InvalidOperationException("ImageMagick could not be started.");
-            var errorTask = process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync();
-            var error = await errorTask;
-            if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? $"ImageMagick exited with code {process.ExitCode}." : error.Trim());
+            string[] arguments = [source, "-auto-orient", "-rotate", (_rotationQuarterTurns * 90).ToString(System.Globalization.CultureInfo.InvariantCulture), temporary];
+            var result = await ImageMagickService.RunAsync(arguments);
+            if (!result.Succeeded) throw new InvalidOperationException(result.ErrorMessage);
             ViewerImage.Source = null;
             _currentBitmap = null;
             File.Move(temporary, source, true);
             File.SetCreationTimeUtc(source, originalCreationTime);
+            ThumbnailCacheService.Invalidate(source);
             await LoadCurrentAsync(false);
             EditStatusText.Text = "Rotation saved to original";
         }
@@ -359,8 +353,8 @@ public sealed partial class ImageViewerWindow : Window
         e.Handled = true;
     }
 
-    private void OpenDefault_Click(object sender, RoutedEventArgs e) { if (CurrentPath is { } path) Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-    private void Reveal_Click(object sender, RoutedEventArgs e) { if (CurrentPath is not { } path) return; var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = true }; start.ArgumentList.Add($"/select,{path}"); Process.Start(start); }
+    private void OpenDefault_Click(object sender, RoutedEventArgs e) { if (CurrentPath is { } path) FolderBrowserService.OpenFile(path); }
+    private void Reveal_Click(object sender, RoutedEventArgs e) { if (CurrentPath is { } path) FolderBrowserService.Reveal(path); }
     private void CopyPath_Click(object sender, RoutedEventArgs e) { if (CurrentPath is not { } path) return; var package = new DataPackage(); package.SetText(path); Clipboard.SetContent(package); DetailsText.Text = "Path copied to clipboard."; }
     private string? CurrentPath => _paths.Length == 0 || _index < 0 || _index >= _paths.Length ? null : _paths[_index];
 

@@ -16,6 +16,7 @@ public sealed partial class RenameWorkspace : UserControl
 {
     private Process? _activeProcess;
     private bool _cancelRequested;
+    private CancellationTokenSource? _folderLoadCancellation;
     public ObservableCollection<FileBrowserItem> Photos { get; } = [];
     public ObservableCollection<RenamePreviewItem> PreviewItems { get; } = [];
 
@@ -80,13 +81,26 @@ public sealed partial class RenameWorkspace : UserControl
         if (await FolderBrowserService.PickFolderAsync() is { } path) LoadFolder(path);
     }
 
-    private void LoadFolder(string path)
+    private async void LoadFolder(string path)
     {
         path = FolderBrowserService.NormalizeExistingFolder(path) ?? path;
+        _folderLoadCancellation?.Cancel();
+        _folderLoadCancellation?.Dispose();
+        var cancellation = _folderLoadCancellation = new CancellationTokenSource();
         FolderPathBox.Text = path;
         AppSettings.Set("CurrentAlbumPath", path);
         Photos.Clear();
-        foreach (var item in FolderBrowserService.Enumerate(path, IsImage)) Photos.Add(item);
+        StatusText.Text = "Loading folder...";
+        IReadOnlyList<FileBrowserItem> items;
+        try { items = await FolderBrowserService.EnumerateAsync(path, ImageFileFormats.IsEditableImage, cancellation.Token); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            StatusText.Text = $"Could not open this folder: {ex.Message}";
+            return;
+        }
+        if (!ReferenceEquals(_folderLoadCancellation, cancellation)) return;
+        foreach (var item in items) Photos.Add(item);
         var affectedCount = Photos.Count(item => !item.IsFolder && (!IsDuplex || item.Name.StartsWith("scan", StringComparison.OrdinalIgnoreCase)));
         PhotoCountText.Text = $"{affectedCount:N0} affected photos";
         PreviewItems.Clear();
@@ -100,7 +114,7 @@ public sealed partial class RenameWorkspace : UserControl
     {
         var parent = Directory.GetParent(scanFolder);
         if (parent is null) return;
-        var matches = Directory.EnumerateFiles(parent.FullName).Where(IsImage).Select(file =>
+        var matches = Directory.EnumerateFiles(parent.FullName).Where(ImageFileFormats.IsEditableImage).Select(file =>
         {
             var match = Regex.Match(Path.GetFileNameWithoutExtension(file), @"^(.+) \((\d+)(?:B)?\)$", RegexOptions.IgnoreCase);
             return match.Success ? new { Name = match.Groups[1].Value, Number = int.Parse(match.Groups[2].Value), File = Path.GetFileName(file) } : null;
@@ -245,7 +259,4 @@ public sealed partial class RenameWorkspace : UserControl
         if (Directory.Exists(FolderPathBox.Text)) FolderBrowserService.OpenFolder(FolderPathBox.Text);
     }
 
-    private static bool IsImage(string file) => Path.GetExtension(file).Equals(".png", StringComparison.OrdinalIgnoreCase)
-        || Path.GetExtension(file).Equals(".jpg", StringComparison.OrdinalIgnoreCase)
-        || Path.GetExtension(file).Equals(".jpeg", StringComparison.OrdinalIgnoreCase);
 }

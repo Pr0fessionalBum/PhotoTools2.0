@@ -15,6 +15,7 @@ public sealed partial class CropWorkspace : UserControl
 {
     private bool _sortDescending;
     private CancellationTokenSource? _cropCancellation;
+    private CancellationTokenSource? _folderLoadCancellation;
     private string? _alternateOutputRoot;
     public ObservableCollection<FileBrowserItem> SourceImages { get; } = [];
     public event EventHandler? ContinueToReplacements;
@@ -33,7 +34,12 @@ public sealed partial class CropWorkspace : UserControl
 
     public void LoadAlbumSelection(string folderPath, IReadOnlyCollection<string> selectedPaths)
     {
-        LoadFolder(folderPath);
+        _ = LoadAlbumSelectionAsync(folderPath, selectedPaths);
+    }
+
+    private async Task LoadAlbumSelectionAsync(string folderPath, IReadOnlyCollection<string> selectedPaths)
+    {
+        if (!await LoadFolderAsync(folderPath)) return;
         var selected = selectedPaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var item in SourceImages.Where(item => !item.IsFolder && selected.Contains(item.Path))) SourceGrid.SelectedItems.Add(item);
     }
@@ -54,21 +60,37 @@ public sealed partial class CropWorkspace : UserControl
         if ((await e.DataView.GetStorageItemsAsync()).FirstOrDefault() is StorageFolder folder) LoadFolder(folder.Path);
     }
 
-    private void LoadFolder(string path)
+    private async void LoadFolder(string path) => await LoadFolderAsync(path);
+
+    private async Task<bool> LoadFolderAsync(string path)
     {
         path = FolderBrowserService.NormalizeExistingFolder(path) ?? path;
+        _folderLoadCancellation?.Cancel();
+        _folderLoadCancellation?.Dispose();
+        var cancellation = _folderLoadCancellation = new CancellationTokenSource();
         FolderPathBox.Text = path;
         AppSettings.Set("CurrentAlbumPath", path);
         SourceImages.Clear();
-        foreach (var item in FolderBrowserService.Enumerate(path, IsSupportedImage)) SourceImages.Add(item);
+        ProgressText.Text = "Loading folder...";
+        IReadOnlyList<FileBrowserItem> items;
+        try { items = await FolderBrowserService.EnumerateAsync(path, ImageFileFormats.IsEditableImage, cancellation.Token); }
+        catch (OperationCanceledException) { return false; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ProgressText.Text = $"Could not open this folder: {ex.Message}";
+            return false;
+        }
+        if (!ReferenceEquals(_folderLoadCancellation, cancellation)) return false;
+        foreach (var item in items) SourceImages.Add(item);
         var imageCount = SourceImages.Count(item => !item.IsFolder);
         ImageCountText.Text = $"{imageCount:N0} images";
         RunButton.IsEnabled = imageCount > 0;
         var output = GetOutputFolder();
         OutputPathText.Text = $"Output: {output}";
-        ReviewButton.IsEnabled = Directory.Exists(output) && Directory.EnumerateFiles(output).Any(IsSupportedImage);
+        ReviewButton.IsEnabled = Directory.Exists(output) && Directory.EnumerateFiles(output).Any(ImageFileFormats.IsEditableImage);
         ContinueButton.IsEnabled = ReviewButton.IsEnabled;
         ProgressText.Text = imageCount > 0 ? "Ready to crop. Double-click folders to browse; only images are processed." : "No PNG, JPG, or JPEG photos found here.";
+        return true;
     }
 
     private void SortBox_SelectionChanged(object sender, SelectionChangedEventArgs e) { if (SourceGrid is not null) ApplySort(); }
@@ -119,6 +141,7 @@ public sealed partial class CropWorkspace : UserControl
         Directory.CreateDirectory(output);
         var succeeded = 0;
         var failed = 0;
+        string? lastError = null;
 
         _cropCancellation = new CancellationTokenSource();
         var cancelled = false;
@@ -127,15 +150,17 @@ public sealed partial class CropWorkspace : UserControl
             var file = files[index];
             ProgressText.Text = $"Cropping {index + 1:N0} of {files.Length:N0}: {file.Name}";
             CropProgress.Value = index * 100d / files.Length;
-            var exitCode = await RunImageMagickAsync(file.Path, Path.Combine(output, file.Name), FuzzBox.Value, ShaveBox.Value, _cropCancellation.Token);
-            if (exitCode == -2) { cancelled = true; break; }
-            if (exitCode == 0 && File.Exists(Path.Combine(output, file.Name))) succeeded++; else failed++;
+            var result = await RunImageMagickAsync(file.Path, Path.Combine(output, file.Name), FuzzBox.Value, ShaveBox.Value, _cropCancellation.Token);
+            if (result.WasCancelled) { cancelled = true; break; }
+            if (result.Succeeded && File.Exists(Path.Combine(output, file.Name))) succeeded++; else { failed++; lastError = result.ErrorMessage; }
         }
 
         CropProgress.Value = cancelled ? CropProgress.Value : 100;
         ProgressText.Text = cancelled
             ? $"Cancelled safely. {succeeded:N0} completed files remain available for review; originals were untouched."
-            : $"Finished: {succeeded:N0} cropped, {failed:N0} failed. Review the output before processing replacements.";
+            : $"Finished: {succeeded:N0} cropped, {failed:N0} failed. Review the output before processing replacements." + (lastError is null ? string.Empty : $" Last error: {lastError}");
+        AlbumFileIndexService.Invalidate(FolderPathBox.Text);
+        AlbumFileIndexService.Invalidate(Directory.GetParent(output)?.FullName);
         ReviewButton.IsEnabled = succeeded > 0;
         ContinueButton.IsEnabled = succeeded > 0;
         RunButton.IsEnabled = true;
@@ -154,34 +179,13 @@ public sealed partial class CropWorkspace : UserControl
             CloseButtonText = "Stay here",
             DefaultButton = ContentDialogButton.Primary
         };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary) OpenPath(output);
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary) FolderBrowserService.OpenFolder(output);
     }
 
-    private static async Task<int> RunImageMagickAsync(string source, string destination, double fuzz, double shave, CancellationToken cancellationToken)
+    private static Task<ExternalProcessResult> RunImageMagickAsync(string source, string destination, double fuzz, double shave, CancellationToken cancellationToken)
     {
-        try
-        {
-            var start = new ProcessStartInfo("magick") { UseShellExecute = false, CreateNoWindow = true };
-            start.ArgumentList.Add(source);
-            start.ArgumentList.Add("-auto-orient");
-            start.ArgumentList.Add("-fuzz"); start.ArgumentList.Add($"{fuzz:0.##}%");
-            start.ArgumentList.Add("-trim"); start.ArgumentList.Add("+repage");
-            start.ArgumentList.Add("-shave"); start.ArgumentList.Add($"{shave:0.##}%x{shave:0.##}%");
-            start.ArgumentList.Add(destination);
-            using var process = Process.Start(start);
-            if (process is null) return -1;
-            try { await process.WaitForExitAsync(cancellationToken); }
-            catch (OperationCanceledException)
-            {
-                if (!process.HasExited) process.Kill(true);
-                return -2;
-            }
-            return process.ExitCode;
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            return -1;
-        }
+        string[] arguments = [source, "-auto-orient", "-fuzz", $"{fuzz:0.##}%", "-trim", "+repage", "-shave", $"{shave:0.##}%x{shave:0.##}%", destination];
+        return ImageMagickService.RunAsync(arguments, cancellationToken);
     }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) { if (Directory.Exists(FolderPathBox.Text)) FolderBrowserService.OpenFolder(FolderPathBox.Text); }
@@ -193,10 +197,8 @@ public sealed partial class CropWorkspace : UserControl
     private void CancelButton_Click(object sender, RoutedEventArgs e) { CancelButton.IsEnabled = false; ProgressText.Text = "Cancelling after the current process stops..."; _cropCancellation?.Cancel(); }
     private async void ChooseOutputRoot_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary }; picker.FileTypeFilter.Add("*");
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
-        if (await picker.PickSingleFolderAsync() is not { } folder) return;
-        _alternateOutputRoot = folder.Path; AppSettings.Set("CropOutputRoot", folder.Path); OutputPathText.Text = $"Output: {GetOutputFolder()}";
+        if (await FolderBrowserService.PickFolderAsync() is not { } path) return;
+        _alternateOutputRoot = path; AppSettings.Set("CropOutputRoot", path); OutputPathText.Text = $"Output: {GetOutputFolder()}";
     }
     private void ResetOutputRoot_Click(object sender, RoutedEventArgs e) { _alternateOutputRoot = null; AppSettings.Set("CropOutputRoot", string.Empty); OutputPathText.Text = $"Output: {GetOutputFolder()}"; }
     private string GetOutputFolder()
@@ -204,10 +206,6 @@ public sealed partial class CropWorkspace : UserControl
         if (string.IsNullOrWhiteSpace(_alternateOutputRoot)) return Path.Combine(FolderPathBox.Text, "cropped");
         return Path.Combine(_alternateOutputRoot, Path.GetFileName(FolderPathBox.Text.TrimEnd(Path.DirectorySeparatorChar)), "cropped");
     }
-    private void ReviewButton_Click(object sender, RoutedEventArgs e) { var path = GetOutputFolder(); if (Directory.Exists(path)) OpenPath(path); }
+    private void ReviewButton_Click(object sender, RoutedEventArgs e) { var path = GetOutputFolder(); if (Directory.Exists(path)) FolderBrowserService.OpenFolder(path); }
     private void ContinueButton_Click(object sender, RoutedEventArgs e) => ContinueToReplacements?.Invoke(this, EventArgs.Empty);
-    private static void OpenPath(string path) => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
-    private static void OpenFile(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-    private static void RevealFile(string path) { var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = true }; start.ArgumentList.Add($"/select,{path}"); Process.Start(start); }
-    private static bool IsSupportedImage(string path) => Path.GetExtension(path).Equals(".png", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).Equals(".jpg", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).Equals(".jpeg", StringComparison.OrdinalIgnoreCase);
 }

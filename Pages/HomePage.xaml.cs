@@ -50,10 +50,7 @@ public sealed partial class HomePage : Page
 
     private async void BrowseButton_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.PicturesLibrary };
-        picker.FileTypeFilter.Add("*");
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
-        if (await picker.PickSingleFolderAsync() is { } folder) await LoadCollectionAsync(folder.Path);
+        if (await FolderBrowserService.PickFolderAsync() is { } path) await LoadCollectionAsync(path);
     }
 
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
@@ -220,6 +217,7 @@ public sealed partial class HomePage : Page
         if (ImageProcessingWorkspace.SelectedIndex == 0) CropWorkspace.RefreshFromCurrentAlbum();
         else if (ImageProcessingWorkspace.SelectedIndex == 1) ConvertWorkspace.RefreshFromCurrentAlbum();
         else if (ImageProcessingWorkspace.SelectedIndex == 2) ReplacementWorkspace.RefreshFromCurrentAlbum();
+        else if (ImageProcessingWorkspace.SelectedIndex == 3) PdfWorkspace.RefreshFromCurrentAlbum();
     }
 
     private void RefreshNumberingTab()
@@ -245,7 +243,7 @@ public sealed partial class HomePage : Page
 
     private void OpenCollection_Click(object sender, RoutedEventArgs e)
     {
-        if (Directory.Exists(CollectionPathBox.Text)) OpenFolder(CollectionPathBox.Text);
+        if (Directory.Exists(CollectionPathBox.Text)) FolderBrowserService.OpenFolder(CollectionPathBox.Text);
     }
 
     private void ApplyFilter()
@@ -298,18 +296,13 @@ public sealed partial class HomePage : Page
         {
             Name = file.Name,
             Path = file.FullName,
-            IsImage = IsImageFile(file.Extension),
+            IsImage = ImageFileFormats.IsCommonImage(file.FullName),
             Size = file.Length,
             Modified = file.LastWriteTime
         });
         return folders.Concat(files).OrderByDescending(item => item.IsFolder)
             .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
     }
-
-    private static bool IsImageFile(string extension) => extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
-        || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) || extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
-        || extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase) || extension.Equals(".gif", StringComparison.OrdinalIgnoreCase)
-        || extension.Equals(".tif", StringComparison.OrdinalIgnoreCase) || extension.Equals(".tiff", StringComparison.OrdinalIgnoreCase);
 
     private void FileSearchBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args) => ApplyFileFilter();
 
@@ -349,6 +342,77 @@ public sealed partial class HomePage : Page
         FileCountText.Text = FileGrid.SelectedItems.Count == 0
             ? $"{BrowserItems.Count:N0} items"
             : $"{FileGrid.SelectedItems.Count:N0} of {BrowserItems.Count:N0} selected";
+        UpdateAlbumRotationControls();
+    }
+
+    private void AlbumRotateLeft_Click(object sender, RoutedEventArgs e) => QueueAlbumRotation(-1);
+    private void AlbumRotateRight_Click(object sender, RoutedEventArgs e) => QueueAlbumRotation(1);
+    private void AlbumResetRotation_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var item in FileGrid.SelectedItems.Cast<FileBrowserItem>().Where(item => item.IsImage)) item.PendingRotationQuarterTurns = 0;
+        UpdateAlbumRotationControls();
+    }
+
+    private void QueueAlbumRotation(int delta)
+    {
+        foreach (var item in FileGrid.SelectedItems.Cast<FileBrowserItem>().Where(item => item.IsImage))
+            item.PendingRotationQuarterTurns += delta;
+        UpdateAlbumRotationControls();
+    }
+
+    private void UpdateAlbumRotationControls()
+    {
+        if (AlbumRotateLeftButton is null) return;
+        var selectedImages = FileGrid.SelectedItems.Cast<FileBrowserItem>().Count(item => item.IsImage);
+        var pending = _allBrowserItems.Count(item => item.IsImage && item.PendingRotationQuarterTurns != 0);
+        AlbumRotateLeftButton.IsEnabled = AlbumRotateRightButton.IsEnabled = selectedImages > 0;
+        AlbumResetRotationButton.IsEnabled = FileGrid.SelectedItems.Cast<FileBrowserItem>().Any(item => item.IsImage && item.PendingRotationQuarterTurns != 0);
+        ApplyAlbumRotationsButton.IsEnabled = pending > 0;
+        PendingRotationText.Text = pending == 0 ? "No pending rotations" : $"{pending:N0} pending rotation(s)";
+    }
+
+    private async void ApplyAlbumRotations_Click(object sender, RoutedEventArgs e)
+    {
+        var pending = _allBrowserItems.Where(item => item.IsImage && item.PendingRotationQuarterTurns != 0).ToArray();
+        if (pending.Length == 0) return;
+        var dialog = new ContentDialog { XamlRoot = XamlRoot, Title = "Apply queued rotations?", Content = $"This will rotate {pending.Length:N0} original image(s).", PrimaryButtonText = "Apply rotations", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        ApplyAlbumRotationsButton.IsEnabled = false;
+        AlbumRotateLeftButton.IsEnabled = AlbumRotateRightButton.IsEnabled = AlbumResetRotationButton.IsEnabled = false;
+        var completed = 0;
+        var failures = new List<string>();
+        foreach (var item in pending)
+        {
+            var temporary = Path.Combine(Path.GetDirectoryName(item.Path)!, $".{Path.GetFileNameWithoutExtension(item.Path)}.{Guid.NewGuid():N}.rotating{Path.GetExtension(item.Path)}");
+            try
+            {
+                PendingRotationText.Text = $"Rotating {completed + 1:N0} of {pending.Length:N0}…";
+                var creationTime = File.GetCreationTimeUtc(item.Path);
+                var result = await ImageMagickService.RunAsync([item.Path, "-auto-orient", "-rotate", (item.PendingRotationQuarterTurns * 90).ToString(System.Globalization.CultureInfo.InvariantCulture), temporary]);
+                if (!result.Succeeded) throw new InvalidOperationException(result.ErrorMessage);
+                File.Move(temporary, item.Path, true);
+                File.SetCreationTimeUtc(item.Path, creationTime);
+                ThumbnailCacheService.Invalidate(item.Path);
+                var info = new FileInfo(item.Path);
+                item.Size = info.Length;
+                item.Modified = info.LastWriteTime;
+                item.PendingRotationQuarterTurns = 0;
+                item.RefreshThumbnail();
+                completed++;
+            }
+            catch (Exception ex) { failures.Add($"{item.Name}: {ex.Message}"); }
+            finally
+            {
+                try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+            }
+        }
+        if (_currentFolderPath is not null) AlbumFileIndexService.Invalidate(_currentFolderPath);
+        UpdateAlbumRotationControls();
+        StatusBar.Severity = failures.Count == 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
+        StatusBar.Message = failures.Count == 0
+            ? $"Applied {completed:N0} rotation(s)."
+            : $"Applied {completed:N0}; {failures.Count:N0} failed. {string.Join(" | ", failures.Take(2))}";
     }
 
     private void SendToTool_Click(object sender, RoutedEventArgs e)
@@ -413,13 +477,13 @@ public sealed partial class HomePage : Page
         {
             if (item.IsFolder) _ = LoadFolderContentsAsync(item.Path);
             else if (item.IsImage) ImageViewerService.Open(BrowserItems, item.Path);
-            else OpenFile(item.Path);
+            else FolderBrowserService.OpenFile(item.Path);
         }
     }
 
     private void RevealBrowserItem_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is FileBrowserItem item) RevealInExplorer(item.Path);
+        if ((sender as FrameworkElement)?.Tag is FileBrowserItem item) FolderBrowserService.Reveal(item.Path);
     }
 
     private async void FileGrid_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e)
@@ -427,7 +491,7 @@ public sealed partial class HomePage : Page
         if (FileGrid.SelectedItem is not FileBrowserItem item) return;
         if (item.IsFolder) await LoadFolderContentsAsync(item.Path);
         else if (item.IsImage) ImageViewerService.Open(BrowserItems, item.Path);
-        else OpenFile(item.Path);
+        else FolderBrowserService.OpenFile(item.Path);
     }
 
     private void FileGrid_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
@@ -435,7 +499,7 @@ public sealed partial class HomePage : Page
         if (e.Key != Windows.System.VirtualKey.Enter || FileGrid.SelectedItem is not FileBrowserItem item) return;
         if (item.IsFolder) _ = LoadFolderContentsAsync(item.Path);
         else if (item.IsImage) ImageViewerService.Open(BrowserItems, item.Path);
-        else OpenFile(item.Path);
+        else FolderBrowserService.OpenFile(item.Path);
         e.Handled = true;
     }
 
@@ -509,7 +573,7 @@ public sealed partial class HomePage : Page
 
     private void OpenSelectedAlbum_Click(object sender, RoutedEventArgs e)
     {
-        if (AlbumList.SelectedItem is AlbumItem album) OpenFolder(album.Path);
+        if (AlbumList.SelectedItem is AlbumItem album) FolderBrowserService.OpenFolder(album.Path);
     }
 
     private void Page_DragEnter(object sender, DragEventArgs e)
@@ -528,7 +592,7 @@ public sealed partial class HomePage : Page
 
     private void OpenAlbum_Click(object sender, RoutedEventArgs e)
     {
-        if (ItemFrom(sender) is { } album) OpenFolder(album.Path);
+        if (ItemFrom(sender) is { } album) FolderBrowserService.OpenFolder(album.Path);
     }
 
     private void UseAlbum_Click(object sender, RoutedEventArgs e)
@@ -541,19 +605,6 @@ public sealed partial class HomePage : Page
         AppSettings.Set("CurrentAlbumPath", album.Path);
         StatusBar.Severity = InfoBarSeverity.Success;
         StatusBar.Message = $"{album.Name} is now the current album for Photo Tools.";
-    }
-
-    private static void OpenFolder(string path) => Process.Start(
-        new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
-
-    private static void OpenFile(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-
-    private static void RevealInExplorer(string path)
-    {
-        if (Directory.Exists(path)) { OpenFolder(path); return; }
-        var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
-        start.ArgumentList.Add($"/select,{path}");
-        Process.Start(start);
     }
 
     private async void RefreshAlbum_Click(object sender, RoutedEventArgs e)

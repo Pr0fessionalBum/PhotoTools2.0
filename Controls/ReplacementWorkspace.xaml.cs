@@ -12,6 +12,7 @@ namespace PhotoTools2.Controls;
 public sealed partial class ReplacementWorkspace : UserControl
 {
     private CancellationTokenSource? _cancellation;
+    private CancellationTokenSource? _loadCancellation;
     private int _compareIndex;
     public ObservableCollection<FileBrowserItem> Originals { get; } = [];
     public ObservableCollection<FileBrowserItem> MatchedOriginals { get; } = [];
@@ -33,15 +34,28 @@ public sealed partial class ReplacementWorkspace : UserControl
         if (await FolderBrowserService.PickFolderAsync() is { } path) { AppSettings.Set("CurrentAlbumPath", path); LoadAlbum(path); }
     }
 
-    private void LoadAlbum(string path)
+    private async void LoadAlbum(string path)
     {
         path = FolderBrowserService.NormalizeExistingFolder(path) ?? path;
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+        var cancellation = _loadCancellation = new CancellationTokenSource();
         FolderPathBox.Text = path;
         Originals.Clear(); MatchedOriginals.Clear(); OtherOriginals.Clear(); Replacements.Clear();
+        StatusText.Text = "Indexing album files...";
+        AlbumFileIndex index;
+        try { index = await AlbumFileIndexService.GetAsync(path, cancellation.Token); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            StatusText.Text = $"Could not index this album: {ex.Message}";
+            return;
+        }
+        if (!ReferenceEquals(_loadCancellation, cancellation)) return;
         var cropped = Path.Combine(path, "cropped");
         var jpg = Path.Combine(path, "JPG");
-        var originalFiles = Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
-            .Where(IsImage)
+        var originalFiles = index.Files
+            .Where(ImageFileFormats.IsEditableImage)
             .Where(file => !file.StartsWith(cropped + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
                 && !file.StartsWith(jpg + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             .OrderBy(file => Path.GetRelativePath(path, file), StringComparer.CurrentCultureIgnoreCase)
@@ -53,14 +67,14 @@ public sealed partial class ReplacementWorkspace : UserControl
         }
 
         if (Directory.Exists(cropped))
-            foreach (var file in Directory.EnumerateFiles(cropped).Where(IsImage))
+            foreach (var file in index.FilesUnder(cropped, false).Where(ImageFileFormats.IsEditableImage))
             {
                 var destination = Path.Combine(path, Path.GetFileName(file));
                 Replacements.Add(CreateReplacement(file, destination, "cropped", false, originalFiles));
             }
 
         if (Directory.Exists(jpg))
-            foreach (var file in Directory.EnumerateFiles(jpg, "*", SearchOption.AllDirectories).Where(IsJpeg))
+            foreach (var file in index.FilesUnder(jpg).Where(ImageFileFormats.IsJpeg))
             {
                 var relative = Path.GetRelativePath(jpg, file);
                 Replacements.Add(CreateReplacement(file, Path.Combine(path, relative), "JPG", true, originalFiles, relative));
@@ -71,7 +85,7 @@ public sealed partial class ReplacementWorkspace : UserControl
         {
             if (matchedPaths.Contains(original.Path)) MatchedOriginals.Add(original); else OtherOriginals.Add(original);
         }
-        foreach (var folder in Directory.EnumerateDirectories(path).OrderBy(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase))
+        foreach (var folder in index.Directories.Where(folder => string.Equals(Path.GetDirectoryName(folder), path, StringComparison.OrdinalIgnoreCase)))
         {
             if (string.Equals(Path.GetFileName(folder), "cropped", StringComparison.OrdinalIgnoreCase) || string.Equals(Path.GetFileName(folder), "JPG", StringComparison.OrdinalIgnoreCase)) continue;
             OtherOriginals.Insert(0, new FileBrowserItem { Name = Path.GetFileName(folder), Path = folder, IsFolder = true });
@@ -102,7 +116,7 @@ public sealed partial class ReplacementWorkspace : UserControl
     }
 
     private void OriginalGrid_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) { if (sender is GridView { SelectedItem: FileBrowserItem item }) FolderBrowserService.OpenItem(item, LoadAlbum); }
-    private void ReplacementGrid_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e) { if (ReplacementGrid.SelectedItem is ReplacementItem item) OpenFile(item.SourcePath); }
+    private void ReplacementGrid_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e) { if (ReplacementGrid.SelectedItem is ReplacementItem item) FolderBrowserService.OpenFile(item.SourcePath); }
     private void ReplacementGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         CompareButton.IsEnabled = ReplacementGrid.SelectedItem is ReplacementItem { OriginalPath: not null };
@@ -153,7 +167,7 @@ public sealed partial class ReplacementWorkspace : UserControl
             if (e.Key == Windows.System.VirtualKey.Left) PreviousCompare_Click(sender, e);
             else if (e.Key == Windows.System.VirtualKey.Right) NextCompare_Click(sender, e);
             else if (e.Key == Windows.System.VirtualKey.Escape) CloseCompare_Click(sender, e);
-            else if (e.Key == Windows.System.VirtualKey.Enter && _compareIndex < Replacements.Count) OpenFile(Replacements[_compareIndex].SourcePath);
+            else if (e.Key == Windows.System.VirtualKey.Enter && _compareIndex < Replacements.Count) FolderBrowserService.OpenFile(Replacements[_compareIndex].SourcePath);
             else return;
             e.Handled = true;
         }
@@ -163,13 +177,11 @@ public sealed partial class ReplacementWorkspace : UserControl
             e.Handled = true;
         }
     }
-    private void OpenOriginal_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is FileBrowserItem item) OpenFile(item.Path); }
-    private void RevealOriginal_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is FileBrowserItem item) RevealFile(item.Path); }
-    private void OpenReplacement_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is ReplacementItem item) OpenFile(item.SourcePath); }
-    private void OpenMatchedOriginal_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is ReplacementItem { OriginalPath: { } path }) OpenFile(path); }
-    private void RevealReplacement_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is ReplacementItem item) RevealFile(item.SourcePath); }
-    private static void OpenFile(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-    private static void RevealFile(string path) { var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = true }; start.ArgumentList.Add($"/select,{path}"); Process.Start(start); }
+    private void OpenOriginal_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is FileBrowserItem item) FolderBrowserService.OpenFile(item.Path); }
+    private void RevealOriginal_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is FileBrowserItem item) FolderBrowserService.Reveal(item.Path); }
+    private void OpenReplacement_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is ReplacementItem item) FolderBrowserService.OpenFile(item.SourcePath); }
+    private void OpenMatchedOriginal_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is ReplacementItem { OriginalPath: { } path }) FolderBrowserService.OpenFile(path); }
+    private void RevealReplacement_Click(object sender, RoutedEventArgs e) { if ((sender as FrameworkElement)?.Tag is ReplacementItem item) FolderBrowserService.Reveal(item.SourcePath); }
 
     private async void Process_Click(object sender, RoutedEventArgs e)
     {
@@ -190,6 +202,7 @@ public sealed partial class ReplacementWorkspace : UserControl
                 await Task.Run(() => File.Copy(item.SourcePath, item.DestinationPath, true), _cancellation.Token);
                 if (!File.Exists(item.DestinationPath) || new FileInfo(item.SourcePath).Length != new FileInfo(item.DestinationPath).Length)
                     throw new IOException($"Verification failed for {item.Name}.");
+                ThumbnailCacheService.Invalidate(item.DestinationPath);
                 completed++;
                 Progress.Value = completed * 100d / Replacements.Count;
             }
@@ -199,8 +212,9 @@ public sealed partial class ReplacementWorkspace : UserControl
                 var png = Path.ChangeExtension(item.DestinationPath, ".png");
                 if (File.Exists(png)) File.Delete(png);
             }
-            DeleteVerifiedStage(Path.Combine(FolderPathBox.Text, "cropped"));
-            DeleteVerifiedStage(Path.Combine(FolderPathBox.Text, "JPG"));
+            DeleteVerifiedStage(Path.Combine(FolderPathBox.Text, "cropped"), Replacements.Any(item => item.Stage == "cropped"));
+            DeleteVerifiedStage(Path.Combine(FolderPathBox.Text, "JPG"), Replacements.Any(item => item.Stage == "JPG"));
+            AlbumFileIndexService.Invalidate(FolderPathBox.Text);
             StatusText.Text = $"Completed and verified {completed:N0} replacements.";
             LoadAlbum(FolderPathBox.Text);
         }
@@ -214,23 +228,22 @@ public sealed partial class ReplacementWorkspace : UserControl
         }
         finally
         {
+            AlbumFileIndexService.Invalidate(FolderPathBox.Text);
             CancelButton.IsEnabled = false;
             ProcessButton.IsEnabled = Replacements.Count > 0;
             _cancellation.Dispose(); _cancellation = null;
         }
     }
 
-    private static void DeleteVerifiedStage(string path)
+    private static void DeleteVerifiedStage(string path, bool containsVerifiedImages)
     {
-        if (!Directory.Exists(path) || !Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).Any(IsImage)) return;
+        if (!containsVerifiedImages || !Directory.Exists(path)) return;
         Directory.Delete(path, true);
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) { CancelButton.IsEnabled = false; StatusText.Text = "Cancelling after the current file..."; _cancellation?.Cancel(); }
-    private void Refresh_Click(object sender, RoutedEventArgs e) { if (Directory.Exists(FolderPathBox.Text)) LoadAlbum(FolderPathBox.Text); }
+    private void Refresh_Click(object sender, RoutedEventArgs e) { if (Directory.Exists(FolderPathBox.Text)) { AlbumFileIndexService.Invalidate(FolderPathBox.Text); LoadAlbum(FolderPathBox.Text); } }
     private void Open_Click(object sender, RoutedEventArgs e) { if (Directory.Exists(FolderPathBox.Text)) FolderBrowserService.OpenFolder(FolderPathBox.Text); }
     private void FolderPathBox_KeyDown(object sender, KeyRoutedEventArgs e) { if (e.Key != Windows.System.VirtualKey.Enter) return; var path = FolderBrowserService.NormalizeExistingFolder(FolderPathBox.Text); if (path is not null) LoadAlbum(path); else StatusText.Text = "That folder path could not be found."; e.Handled = true; }
     private void UpFolder_Click(object sender, RoutedEventArgs e) { if (FolderBrowserService.GetParent(FolderPathBox.Text) is { } parent) LoadAlbum(parent); }
-    private static bool IsImage(string path) => IsJpeg(path) || Path.GetExtension(path).Equals(".png", StringComparison.OrdinalIgnoreCase);
-    private static bool IsJpeg(string path) => Path.GetExtension(path).Equals(".jpg", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).Equals(".jpeg", StringComparison.OrdinalIgnoreCase);
 }

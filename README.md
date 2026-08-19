@@ -10,6 +10,7 @@ The application is designed for local photo workflows. Files remain on the compu
 - Full-image thumbnails that preserve the entire photograph without cropping the preview.
 - Batch crop processing through ImageMagick, including progress and cancellation.
 - PNG-to-JPG conversion into a `JPG` subfolder, with an optional alternate output location.
+- Native multi-PDF page preview and batch JPG export with editable output names, per-page rotation, inclusion, quality, and DPI controls.
 - Cropped/JPG replacement matching based on filenames.
 - Front/back scan renaming and numbering repair, including `A`/`B` suffix handling.
 - Photo statistics and estimated scanning sessions based on photo creation times.
@@ -165,6 +166,38 @@ The roadmap is exploratory and may change as workflows are tested.
 - Shared browser behavior belongs in `FolderBrowserService` instead of being reimplemented per workspace.
 - Keep long-running operations asynchronous, cancellable, and accompanied by visible progress.
 - Build x64 before testing because the current launcher and native OpenCV runtime target `win-x64`.
+
+### Performance baselines
+
+Use the read-only benchmark script before and after performance changes. Run it against the same representative photo folder, with other heavy applications closed:
+
+```powershell
+.\Scripts\Measure-PhotoToolsPerformance.ps1 'D:\Photos\Large Album' -Iterations 7
+```
+
+Results are saved as timestamped JSON files under `performance-results`. Compare a later run with an earlier baseline:
+
+```powershell
+.\Scripts\Measure-PhotoToolsPerformance.ps1 'D:\Photos\Large Album' -Iterations 7 -CompareWith '.\performance-results\performance-20260818-180000.json'
+```
+
+The script measures time to discover the first 25 items, complete folder enumeration, and decode a representative sample of 320-pixel thumbnails. Negative comparison percentages indicate an improvement. The benchmark never modifies source photos.
+
+For consistent generated test data, run the complete deterministic suite:
+
+```powershell
+.\Scripts\Invoke-PhotoToolsPerformanceSuite.ps1 -Case All -Iterations 7
+```
+
+The suite creates fixed `Small`, `Large`, and `Mixed` cases under `performance-fixtures`. The same seed and files are reused on later runs. Compare the suite after a code change with a previous suite result:
+
+```powershell
+.\Scripts\Invoke-PhotoToolsPerformanceSuite.ps1 -Case All -Iterations 7 -CompareWith '.\performance-results\suite-20260818-190000.json'
+```
+
+Use `-Regenerate` to rebuild the fixtures from the fixed seed. Both generated fixtures and results are excluded from Git.
+
+Every benchmark also writes a readable text summary into the project-level `test results` folder. Detailed JSON remains in `performance-results` for automated baseline comparisons.
 
 ## Status
 

@@ -21,6 +21,9 @@ artifacts/
 *.trx
 *.coverage
 *.coveragexml
+performance-results/
+performance-fixtures/
+test results/
 
 # NuGet
 *.nupkg

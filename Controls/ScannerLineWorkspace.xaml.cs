@@ -14,6 +14,7 @@ namespace PhotoTools2.Controls;
 public sealed partial class ScannerLineWorkspace : UserControl
 {
     private CancellationTokenSource? _cancellation;
+    private CancellationTokenSource? _folderLoadCancellation;
     private string[] _analysisFiles = [];
     public ObservableCollection<FileBrowserItem> FolderItems { get; } = [];
     public ObservableCollection<ScannerLineResult> Results { get; } = [];
@@ -22,8 +23,13 @@ public sealed partial class ScannerLineWorkspace : UserControl
     public void RefreshFromCurrentAlbum() { var path = AppSettings.Get("CurrentAlbumPath"); if (Directory.Exists(path)) LoadFolder(path); }
     public void LoadAlbumSelection(string folderPath, IReadOnlyCollection<string> selectedPaths)
     {
-        LoadFolder(folderPath);
-        var selected = selectedPaths.Where(File.Exists).Where(IsImage).ToArray();
+        _ = LoadAlbumSelectionAsync(folderPath, selectedPaths);
+    }
+
+    private async Task LoadAlbumSelectionAsync(string folderPath, IReadOnlyCollection<string> selectedPaths)
+    {
+        if (!await LoadFolderAsync(folderPath)) return;
+        var selected = selectedPaths.Where(File.Exists).Where(ImageFileFormats.IsAnalysisImage).ToArray();
         if (selected.Length > 0)
         {
             _analysisFiles = selected;
@@ -33,14 +39,35 @@ public sealed partial class ScannerLineWorkspace : UserControl
         }
     }
     private async void ChooseFolder_Click(object sender, RoutedEventArgs e) { if (await FolderBrowserService.PickFolderAsync() is { } path) LoadFolder(path); }
-    private void LoadFolder(string path)
+    private async void LoadFolder(string path) => await LoadFolderAsync(path);
+
+    private async Task<bool> LoadFolderAsync(string path)
     {
         path = FolderBrowserService.NormalizeExistingFolder(path) ?? path; FolderPathBox.Text = path; AppSettings.Set("CurrentAlbumPath", path); FolderItems.Clear(); Results.Clear();
-        foreach (var item in FolderBrowserService.Enumerate(path, IsImage)) FolderItems.Add(item);
-        _analysisFiles = EnumerateAnalysisFiles(path, IncludeSubfoldersBox.IsChecked == true).ToArray();
+        _folderLoadCancellation?.Cancel();
+        _folderLoadCancellation?.Dispose();
+        var cancellation = _folderLoadCancellation = new CancellationTokenSource();
+        StatusText.Text = "Loading folder...";
+        try
+        {
+            var itemsTask = FolderBrowserService.EnumerateAsync(path, ImageFileFormats.IsAnalysisImage, cancellation.Token);
+            var includeSubfolders = IncludeSubfoldersBox.IsChecked == true;
+            var analysisTask = Task.Run(() => EnumerateAnalysisFiles(path, includeSubfolders, cancellation.Token).ToArray(), cancellation.Token);
+            await Task.WhenAll(itemsTask, analysisTask);
+            if (!ReferenceEquals(_folderLoadCancellation, cancellation)) return false;
+            foreach (var item in await itemsTask) FolderItems.Add(item);
+            _analysisFiles = await analysisTask;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            StatusText.Text = $"Could not open this folder: {ex.Message}";
+            return false;
+        }
         var count = _analysisFiles.Length; ImageCountText.Text = $"{count:N0} images"; AnalyzeButton.IsEnabled = count > 0;
         ResultSummaryText.Text = count < 3 ? "Fewer than three images: results may include normal image details." : "Ready for batch comparison.";
         StatusText.Text = count == 0 ? "No supported images found here." : "Ready. Analysis is read-only and uses downscaled copies.";
+        return true;
     }
     private async void Analyze_Click(object sender, RoutedEventArgs e)
     {
@@ -220,15 +247,15 @@ public sealed partial class ScannerLineWorkspace : UserControl
     private void OpenFolder_Click(object sender, RoutedEventArgs e) { if (Directory.Exists(FolderPathBox.Text)) FolderBrowserService.OpenFolder(FolderPathBox.Text); }
     private void Workspace_DragEnter(object sender, DragEventArgs e) { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; }
     private async void Workspace_Drop(object sender, DragEventArgs e) { if (e.DataView.Contains(StandardDataFormats.StorageItems) && (await e.DataView.GetStorageItemsAsync()).FirstOrDefault() is StorageFolder folder) LoadFolder(folder.Path); }
-    private static bool IsImage(string path) => new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
-    private static IEnumerable<string> EnumerateAnalysisFiles(string root, bool recurse)
+    private static IEnumerable<string> EnumerateAnalysisFiles(string root, bool recurse, CancellationToken token)
     {
         var pending = new Stack<string>(); pending.Push(root);
         while (pending.Count > 0)
         {
+            token.ThrowIfCancellationRequested();
             var folder = pending.Pop();
-            IEnumerable<string> files; try { files = Directory.EnumerateFiles(folder).Where(IsImage).ToArray(); } catch (UnauthorizedAccessException) { continue; }
-            foreach (var file in files) yield return file;
+            IEnumerable<string> files; try { files = Directory.EnumerateFiles(folder).Where(ImageFileFormats.IsAnalysisImage).ToArray(); } catch (UnauthorizedAccessException) { continue; }
+            foreach (var file in files) { token.ThrowIfCancellationRequested(); yield return file; }
             if (!recurse) continue;
             IEnumerable<string> children; try { children = Directory.EnumerateDirectories(folder).ToArray(); } catch (UnauthorizedAccessException) { continue; }
             foreach (var child in children.Where(path => !new[] { "cropped", "JPG", "Quarantine" }.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase))) pending.Push(child);

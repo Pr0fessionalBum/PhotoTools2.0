@@ -4,12 +4,6 @@ namespace PhotoTools2.Services;
 
 public static class AlbumScanner
 {
-    private static readonly HashSet<string> PhotoExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".jpg", ".jpeg", ".jfif", ".png", ".tif", ".tiff", ".bmp", ".gif",
-        ".webp", ".heic", ".heif", ".avif", ".dng"
-    };
-
     public static IReadOnlyList<AlbumItem> ScanCollection(string collectionPath)
     {
         var albums = new List<AlbumItem>();
@@ -24,8 +18,8 @@ public static class AlbumScanner
                 {
                     Name = Path.GetFileName(folder),
                     Path = folder,
-                    PhotoCount = files.Count(file => PhotoExtensions.Contains(Path.GetExtension(file))),
-                    PngCount = files.Count(file => Path.GetExtension(file).Equals(".png", StringComparison.OrdinalIgnoreCase)),
+                    PhotoCount = files.Count(ImageFileFormats.IsLibraryPhoto),
+                    PngCount = files.Count(ImageFileFormats.IsPng),
                     CroppedCount = CountImages(croppedPath),
                     ConvertedCount = CountJpegs(convertedPath)
                 });
@@ -37,12 +31,10 @@ public static class AlbumScanner
     }
 
     private static int CountImages(string folder) => Directory.Exists(folder)
-        ? Directory.EnumerateFiles(folder).Count(file => PhotoExtensions.Contains(Path.GetExtension(file)))
+        ? Directory.EnumerateFiles(folder).Count(ImageFileFormats.IsLibraryPhoto)
         : 0;
 
     private static int CountJpegs(string folder) => Directory.Exists(folder)
-        ? Directory.EnumerateFiles(folder).Count(file =>
-            Path.GetExtension(file).Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
-            Path.GetExtension(file).Equals(".jpeg", StringComparison.OrdinalIgnoreCase))
+        ? Directory.EnumerateFiles(folder).Count(ImageFileFormats.IsJpeg)
         : 0;
 }

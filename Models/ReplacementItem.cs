@@ -1,5 +1,5 @@
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
+using PhotoTools2.Services;
 
 namespace PhotoTools2.Models;
 
@@ -14,5 +14,5 @@ public sealed class ReplacementItem
     public string MatchStatus { get; set; } = "No matching original";
     public ImageSource? Thumbnail => string.IsNullOrWhiteSpace(SourcePath)
         ? null
-        : new BitmapImage(new Uri(SourcePath));
+        : ThumbnailCacheService.Get(SourcePath);
 }

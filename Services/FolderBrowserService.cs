@@ -23,16 +23,25 @@ public static class FolderBrowserService
         return normalized is null ? null : Directory.GetParent(normalized)?.FullName;
     }
 
-    public static IEnumerable<FileBrowserItem> Enumerate(string path, Func<string, bool> includeFile)
+    public static Task<IReadOnlyList<FileBrowserItem>> EnumerateAsync(
+        string path,
+        Func<string, bool> includeFile,
+        CancellationToken token = default) => Task.Run<IReadOnlyList<FileBrowserItem>>(() =>
     {
+        var items = new List<FileBrowserItem>();
         foreach (var folder in Directory.EnumerateDirectories(path).OrderBy(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase))
-            yield return new FileBrowserItem { Name = Path.GetFileName(folder), Path = folder, IsFolder = true };
+        {
+            token.ThrowIfCancellationRequested();
+            items.Add(new FileBrowserItem { Name = Path.GetFileName(folder), Path = folder, IsFolder = true });
+        }
         foreach (var file in Directory.EnumerateFiles(path).Where(includeFile).OrderBy(Path.GetFileName, StringComparer.CurrentCultureIgnoreCase))
         {
+            token.ThrowIfCancellationRequested();
             var info = new FileInfo(file);
-            yield return new FileBrowserItem { Name = info.Name, Path = info.FullName, IsImage = true, Size = info.Length, Modified = info.LastWriteTime };
+            items.Add(new FileBrowserItem { Name = info.Name, Path = info.FullName, IsImage = true, Size = info.Length, Modified = info.LastWriteTime });
         }
-    }
+        return items;
+    }, token);
 
     public static async Task<string?> PickFolderAsync()
     {
@@ -43,6 +52,14 @@ public static class FolderBrowserService
     }
 
     public static void OpenFolder(string path) => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+    public static void OpenFile(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+    public static void OpenPath(string path) { if (Directory.Exists(path)) OpenFolder(path); else if (File.Exists(path)) OpenFile(path); }
     public static void OpenItem(FileBrowserItem item, Action<string> enterFolder) { if (item.IsFolder) enterFolder(item.Path); else Process.Start(new ProcessStartInfo(item.Path) { UseShellExecute = true }); }
-    public static void Reveal(string path) { var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = true }; start.ArgumentList.Add($"/select,{path}"); Process.Start(start); }
+    public static void Reveal(string path)
+    {
+        if (Directory.Exists(path)) { OpenFolder(path); return; }
+        var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+        start.ArgumentList.Add($"/select,{path}");
+        Process.Start(start);
+    }
 }
